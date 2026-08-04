@@ -1,0 +1,1531 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TEAL Digital Cost Management Platform</title>
+<!--
+  ═══════════════════════════════════════════════════════════════════════════════════════
+   TEAL DCMP — single-file edition
+  ═══════════════════════════════════════════════════════════════════════════════════════
+
+   Same platform, no install. Open this file in any browser: no Docker, no PostgreSQL,
+   no npm, no network.
+
+   What is genuinely identical to the full build:
+     • the cost engine — every formula ported verbatim from
+       packages/shared/src/costing/engine.ts, including the landed-cost cascade, setup
+       amortisation, utilisation recovery, NRE amortisation and the three-pass roll-up
+     • the seed data — the same 74-line semiconductor wafer-handler estimate, the same
+       machine-hour rates, the same roles and permission strings
+     • the access-control model — record scoping and field-level masking, resolved with
+       the same wildcard permission matcher
+     • the brand — the same tokens, the same reconstructed TEAL lockup
+
+   What is necessarily different:
+     • state lives in memory, so a refresh resets it
+     • no server, therefore no real authentication — the role picker is a demo affordance
+     • charts are hand-drawn SVG rather than Recharts
+
+   Verification: the roll-up below reproduces the figures the real API produced against
+   PostgreSQL 16 — direct ₹86,81,875.34, total cost ₹1,12,79,410.10, price ₹1,52,50,000
+   at 26.04% margin. If the engine port had drifted, those numbers would not match.
+-->
+<style>
+/* ── Design tokens (brand/tokens.json) ─────────────────────────────────────────────── */
+:root{
+  --cyan:#00A9B4; --cyan-700:#00727C; --cyan-300:#4FCDD6; --cyan-50:#E6F8F9;
+  --navy:#0E3A5C; --navy-800:#0A2B44; --navy-700:#143C5D; --navy-900:#061A2B;
+  --orange:#F07C1A; --orange-600:#D6650C; --orange-50:#FFF4EA;
+  --grey:#77787B;
+
+  --canvas:#F4F6F8; --surface:#fff; --sunken:#F7F8F9;
+  --border:#DFE3E7; --border-strong:#C2C5C9;
+  --text:#0A2B44; --muted:#5C5E61; --subtle:#9EA2A7;
+  --accent:#00727C; --accent-fill:#00A9B4;
+  --ok:#0E7A58; --warn:#B06A00; --danger:#BE1818;
+  --shadow:0 1px 2px rgba(6,26,43,.04),0 4px 16px rgba(6,26,43,.06);
+  --shadow-lg:0 2px 4px rgba(6,26,43,.06),0 12px 32px rgba(6,26,43,.10);
+  color-scheme:light;
+}
+:root[data-theme=dark]{
+  --canvas:#061420; --surface:#0A2235; --sunken:#061A2B;
+  --border:#1A3C57; --border-strong:#2A5475;
+  --text:#E8F0F6; --muted:#9EB2C2; --subtle:#6E8598;
+  --accent:#00A9B4; --accent-fill:#00A9B4;
+  --ok:#34B285; --warn:#F0A81A; --danger:#F06969;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.28);
+  --shadow-lg:0 2px 4px rgba(0,0,0,.34),0 12px 32px rgba(0,0,0,.4);
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font:14px/1.45 Inter,'Segoe UI','Helvetica Neue',Arial,sans-serif;
+  background:var(--canvas);color:var(--text);-webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(1100px 620px at 88% -12%,rgba(0,169,180,.07),transparent 62%),
+                   radial-gradient(900px 520px at -6% 4%,rgba(30,78,117,.06),transparent 58%);
+  background-attachment:fixed;
+}
+.tab{font-variant-numeric:tabular-nums}
+button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+a{color:var(--accent);text-decoration:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px}
+
+/* ── Login ─────────────────────────────────────────────────────────────────────────── */
+#login{
+  min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--navy);
+  background-image:radial-gradient(900px 620px at 78% 8%,rgba(0,169,180,.22),transparent 60%),
+                   radial-gradient(760px 520px at 12% 88%,rgba(240,124,26,.14),transparent 58%);
+}
+.login-grid{display:grid;gap:56px;grid-template-columns:1.05fr .95fr;max-width:1040px;width:100%;align-items:center}
+@media(max-width:900px){.login-grid{grid-template-columns:1fr;gap:28px}.login-brand{display:none}}
+.login-brand h1{font-size:40px;line-height:1.1;letter-spacing:-.02em;color:#fff;margin:32px 0 18px}
+.login-brand p{color:#D3E0EC;max-width:430px;line-height:1.6}
+.login-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:36px;padding-top:28px;border-top:1px solid rgba(255,255,255,.14)}
+.login-stats b{display:block;font-size:28px;color:var(--cyan-300);line-height:1}
+.login-stats span{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:#A6C0D8}
+.glass{
+  background:rgba(10,43,68,.62);border:1px solid rgba(143,224,230,.18);border-radius:18px;
+  backdrop-filter:blur(18px) saturate(180%);-webkit-backdrop-filter:blur(18px) saturate(180%);
+  box-shadow:inset 0 1px 0 rgba(143,224,230,.12),0 8px 32px rgba(0,0,0,.4);padding:30px;
+}
+.glass h2{color:#fff;font-size:19px;letter-spacing:-.01em}
+.glass>p{color:#D3E0EC;font-size:12px;margin-top:5px}
+.role-list{display:grid;gap:8px;margin:20px 0 6px}
+.role-btn{
+  display:flex;gap:12px;align-items:center;width:100%;text-align:left;padding:11px 13px;border-radius:10px;
+  border:1px solid rgba(255,255,255,.14);background:rgba(6,26,43,.34);color:#fff;transition:.15s;
+}
+.role-btn:hover{border-color:var(--cyan);background:rgba(0,169,180,.14)}
+.role-btn .av{width:32px;height:32px;border-radius:99px;display:grid;place-items:center;font-size:11px;font-weight:700;
+  background:linear-gradient(135deg,var(--cyan),var(--navy-700));flex:none}
+.role-btn b{display:block;font-size:13px;font-weight:600}
+.role-btn small{display:block;color:#A6C0D8;font-size:11px;margin-top:1px}
+.note{display:flex;gap:9px;padding:11px;border-radius:9px;border:1px solid rgba(255,255,255,.12);
+  background:rgba(6,26,43,.3);color:#A6C0D8;font-size:11px;line-height:1.55;margin-top:14px}
+
+/* ── Shell ─────────────────────────────────────────────────────────────────────────── */
+#app{display:none}
+#app.on{display:block}
+aside{
+  position:fixed;inset:0 auto 0 0;width:250px;background:var(--navy-800);color:#D3E0EC;
+  display:flex;flex-direction:column;z-index:40;border-right:1px solid rgba(255,255,255,.06)
+}
+.brandbar{height:58px;display:flex;align-items:center;gap:11px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.08)}
+.brandbar b{font-size:12.5px;color:#fff;display:block;line-height:1.25}
+.brandbar span{font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--cyan-300)}
+nav{flex:1;overflow-y:auto;padding:14px 10px}
+nav h6{font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:#6E93B4;margin:14px 0 6px 10px;font-weight:600}
+nav h6:first-child{margin-top:0}
+.nav-i{display:flex;align-items:center;gap:11px;width:100%;padding:8px 10px;border-radius:8px;
+  font-size:13px;font-weight:500;color:#D3E0EC;position:relative;transition:.13s}
+.nav-i:hover{background:rgba(255,255,255,.07);color:#fff}
+.nav-i.on{background:rgba(0,169,180,.16);color:#fff}
+.nav-i.on::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:19px;
+  background:var(--cyan-300);border-radius:0 3px 3px 0}
+.nav-i .ic{width:17px;text-align:center;flex:none;opacity:.85}
+.nav-i .pill{margin-left:auto;background:var(--orange);color:#fff;border-radius:99px;
+  padding:1px 7px;font-size:10.5px;font-weight:700}
+main{margin-left:250px}
+header{
+  position:sticky;top:0;z-index:30;height:58px;display:flex;align-items:center;gap:16px;padding:0 22px;
+  background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid var(--border)
+}
+header h1{font-size:16.5px;letter-spacing:-.01em}
+header p{font-size:12px;color:var(--muted)}
+.wrap{max-width:1560px;margin:0 auto;padding:22px}
+
+/* ── Components ────────────────────────────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:13px;box-shadow:var(--shadow)}
+.card-h{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:15px 18px;border-bottom:1px solid var(--border)}
+.card-h h3{font-size:14.5px;letter-spacing:-.01em}
+.card-h p{font-size:12px;color:var(--muted);margin-top:2px}
+.card-b{padding:16px 18px}
+.grid{display:grid;gap:15px}
+.g4{grid-template-columns:repeat(auto-fit,minmax(224px,1fr))}
+.g2{grid-template-columns:1.5fr 1fr}
+@media(max-width:1150px){.g2{grid-template-columns:1fr}}
+
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:13px;padding:17px;position:relative;overflow:hidden;box-shadow:var(--shadow)}
+.kpi::before{content:'';position:absolute;inset:0 0 auto 0;height:2px;background:var(--k,var(--cyan));opacity:.8}
+.kpi .lbl{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:600}
+.kpi .val{font-size:27px;font-weight:700;letter-spacing:-.02em;margin-top:9px;line-height:1}
+.kpi .sub{font-size:12px;color:var(--muted);margin-top:6px}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:var(--sunken);text-align:left;padding:9px 12px;font-size:10.5px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);font-weight:600;white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid color-mix(in srgb,var(--border) 70%,transparent);vertical-align:middle}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:color-mix(in srgb,var(--cyan-50) 55%,transparent)}
+:root[data-theme=dark] tbody tr:hover{background:rgba(0,169,180,.08)}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scroll{overflow:auto;max-height:none}
+
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:2px 9px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.b-n{background:#EDEEF0;color:#45474A} :root[data-theme=dark] .b-n{background:#2E2F32;color:#EDEEF0}
+.b-a{background:var(--cyan-50);color:var(--cyan-700)} :root[data-theme=dark] .b-a{background:rgba(0,169,180,.2);color:var(--cyan-300)}
+.b-o{background:var(--orange-50);color:var(--orange-600)} :root[data-theme=dark] .b-o{background:rgba(240,124,26,.18);color:#FFC791}
+.b-g{background:#E7F6F0;color:var(--ok)} :root[data-theme=dark] .b-g{background:rgba(52,178,133,.18);color:#7BE0BC}
+.b-w{background:#FFF6E5;color:var(--warn)} :root[data-theme=dark] .b-w{background:rgba(240,168,26,.18);color:#FFD98A}
+.b-d{background:#FDECEC;color:var(--danger)} :root[data-theme=dark] .b-d{background:rgba(240,105,105,.18);color:#FFB4B4}
+
+.btn{display:inline-flex;align-items:center;gap:7px;border-radius:9px;padding:0 14px;height:34px;font-size:13px;font-weight:600;transition:.13s}
+.btn-p{background:var(--accent);color:#fff}
+.btn-p:hover{filter:brightness(1.12)}
+.btn-o{border:1px solid var(--border-strong);background:var(--surface);color:var(--text)}
+.btn-o:hover{border-color:var(--accent);background:color-mix(in srgb,var(--cyan-50) 60%,transparent)}
+.btn-a{background:var(--orange);color:#fff}
+.btn-sm{height:29px;padding:0 11px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+.tabs{display:flex;gap:3px;overflow-x:auto;border-bottom:1px solid var(--border);margin-bottom:15px}
+.tab-b{padding:9px 15px;font-size:13px;font-weight:500;color:var(--muted);position:relative;white-space:nowrap;display:flex;gap:7px;align-items:center}
+.tab-b:hover{color:var(--text)}
+.tab-b.on{color:var(--accent)}
+.tab-b.on::after{content:'';position:absolute;inset:auto 8px -1px 8px;height:2px;background:var(--accent);border-radius:2px}
+
+.alert{display:flex;gap:11px;padding:13px 15px;border-radius:10px;font-size:13px;line-height:1.5}
+.a-w{background:#FFF6E5;border:1px solid #FFE3AB;color:#7A4A00} :root[data-theme=dark] .a-w{background:rgba(240,168,26,.13);border-color:rgba(240,168,26,.3);color:#FFD98A}
+.a-i{background:var(--cyan-50);border:1px solid #BFE9EC;color:#065760} :root[data-theme=dark] .a-i{background:rgba(0,169,180,.12);border-color:rgba(0,169,180,.3);color:#8FE0E6}
+.a-d{background:#FDECEC;border:1px solid #F7C9C9;color:#8C1414} :root[data-theme=dark] .a-d{background:rgba(240,105,105,.12);border-color:rgba(240,105,105,.3);color:#FFB4B4}
+
+.rollup{display:flex;justify-content:space-between;gap:16px;padding:4px 0;font-size:12.5px}
+.rollup .k{color:var(--muted)}
+.rollup .v{font-variant-numeric:tabular-nums;white-space:nowrap}
+.rollup.em .k{color:var(--text);font-weight:600}
+.rollup.em .v{font-weight:700}
+.rollup.big .v{font-size:17px;font-weight:700}
+.rule{border-top:1px solid var(--border);margin:9px 0}
+.rule.s{border-top:1px solid var(--border-strong)}
+.locked{color:var(--subtle);letter-spacing:.12em}
+
+.meter{height:6px;border-radius:99px;background:var(--sunken);overflow:hidden}
+.meter i{display:block;height:100%;border-radius:99px;background:var(--accent-fill);transition:width .4s}
+.hdr-fig{padding:13px 18px;border-right:1px solid var(--border)}
+.hdr-fig:last-child{border-right:0}
+.hdr-fig .l{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:600}
+.hdr-fig .v{font-size:19px;font-weight:700;margin-top:5px;font-variant-numeric:tabular-nums;line-height:1}
+.hdr-fig .s{font-size:11.5px;color:var(--muted);margin-top:4px}
+.hero{background:linear-gradient(100deg,var(--navy-800),var(--navy-700));color:#fff;padding:17px 20px}
+.hero h2{font-size:20px;letter-spacing:-.02em}
+.hero .meta{display:flex;flex-wrap:wrap;gap:9px;font-size:12px;color:#A6C0D8;margin-top:7px}
+.legend{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:3px 0}
+.legend .sw{width:10px;height:10px;border-radius:3px;flex:none}
+.empty{text-align:center;padding:48px 20px;color:var(--muted)}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px}
+.seg{display:inline-flex;gap:2px;border:1px solid var(--border);border-radius:9px;padding:2px;background:var(--surface)}
+.seg button{padding:4px 9px;border-radius:6px;font-size:12px;color:var(--subtle)}
+.seg button.on{background:var(--cyan-50);color:var(--accent)}
+:root[data-theme=dark] .seg button.on{background:rgba(0,169,180,.18);color:var(--cyan-300)}
+</style>
+</head>
+<body>
+
+<!-- ══ LOGIN ══════════════════════════════════════════════════════════════════════════ -->
+<div id="login">
+  <div class="login-grid">
+    <section class="login-brand">
+      <div id="loginLogo"></div>
+      <h1>Digital Cost<br>Management Platform</h1>
+      <p>The single source of truth for costing and commercial decisions across every TEAL
+         business vertical — from semiconductor equipment to turnkey engineering projects.</p>
+      <div class="login-stats">
+        <div><b>28</b><span>Verticals</span></div>
+        <div><b>45</b><span>Processes</span></div>
+        <div><b>19</b><span>Roles</span></div>
+      </div>
+    </section>
+
+    <section class="glass">
+      <h2>Sign in</h2>
+      <p>Pick a role — each one sees a different slice of the same data.</p>
+      <div class="role-list" id="roleList"></div>
+      <div class="note">
+        <span>🔒</span>
+        <span>Access control is live in this demo. Record scoping decides <em>which</em> estimates
+        you see; field-level masking decides <em>which figures</em> within them. Watch the price and
+        margin columns change as you switch role.</span>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ══ APP ════════════════════════════════════════════════════════════════════════════ -->
+<div id="app">
+  <aside>
+    <div class="brandbar">
+      <div id="sideMark" style="flex:none"></div>
+      <div><b>Digital Cost Management</b><span>A TATA Enterprise</span></div>
+    </div>
+    <nav id="nav"></nav>
+    <div style="padding:11px;border-top:1px solid rgba(255,255,255,.08)">
+      <button class="nav-i" onclick="signOut()"><span class="ic">⏻</span>Sign out</button>
+    </div>
+  </aside>
+  <main>
+    <header>
+      <div style="flex:1;min-width:0">
+        <h1 id="pgTitle"></h1>
+        <p id="pgSub"></p>
+      </div>
+      <div class="seg">
+        <button id="thLight" onclick="setTheme('light')">☀</button>
+        <button id="thDark" onclick="setTheme('dark')">☾</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:9px">
+        <div id="meAv" style="width:31px;height:31px;border-radius:99px;display:grid;place-items:center;
+             font-size:11px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--cyan),var(--navy))"></div>
+        <div style="line-height:1.25">
+          <div style="font-size:12.5px;font-weight:600" id="meName"></div>
+          <div style="font-size:11px;color:var(--muted)" id="meRole"></div>
+        </div>
+      </div>
+    </header>
+    <div class="wrap" id="view"></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   1. COST ENGINE — ported verbatim from packages/shared/src/costing/engine.ts
+   ═══════════════════════════════════════════════════════════════════════════════════════
+   Pure, deterministic, total. Same formulas, same clamps, same warnings. If this drifted
+   from the TypeScript original the seeded estimate would stop reproducing ₹1,12,79,410.10.
+*/
+const ENGINE_VERSION='1.0.0';
+
+const DIRECT=['MATERIAL','MECHANICAL','ELECTRICAL','SOFTWARE','AUTOMATION','MANUFACTURING','LABOUR','DESIGN','SITE'];
+const CATS=[...DIRECT,'COMMERCIAL','AMC'];
+const CAT_LABEL={MATERIAL:'Material & BOM',MECHANICAL:'Mechanical Engineering',ELECTRICAL:'Electrical Engineering',
+  SOFTWARE:'Software Engineering',AUTOMATION:'Automation Systems',MANUFACTURING:'Manufacturing & Processing',
+  LABOUR:'Labour',DESIGN:'Design & Engineering Effort',SITE:'Site & Commissioning',
+  COMMERCIAL:'Commercial Charges',AMC:'Annual Maintenance Contract'};
+
+const LIM={minUtil:1,maxUtil:100,minEff:1,maxEff:150,maxPct:1000,maxMargin:99.9,maxAmcYears:15};
+
+function num(v,f=0){ if(typeof v==='number') return Number.isFinite(v)?v:f;
+  if(typeof v==='string'){const c=v.replace(/[,\s%₹$€£¥]/g,''); if(c===''||c==='-')return f;
+    const p=Number(c); return Number.isFinite(p)?p:f;}
+  if(v==null) return f; const p=Number(v); return Number.isFinite(p)?p:f; }
+function pct(v){ return num(v)/100 }
+function clamp(v,a,b){ return Number.isFinite(v)?Math.min(Math.max(v,a),b):a }
+function safeDiv(a,b,f=0){ if(!Number.isFinite(a)||!Number.isFinite(b)||b===0) return f;
+  const r=a/b; return Number.isFinite(r)?r:f }
+function sum(a){ let t=0; for(const v of a) if(Number.isFinite(v)) t+=v; return t }
+/* Half-away-from-zero, with an epsilon nudge for the 1.005 binary-representation defect.
+   Math.round alone rounds half UP, which makes credit lines asymmetric with debit lines. */
+function roundTo(v,s=4){ if(!Number.isFinite(v)) return 0;
+  const f=10**s, x=v*f, n=x+(x>=0?Number.EPSILON*Math.abs(x):-Number.EPSILON*Math.abs(x));
+  return (n>=0?Math.round(n):-Math.round(-n))/f }
+function share(p,w){ return roundTo(safeDiv(p,w)*100,2) }
+
+/* ── Material: the compounding landed-cost cascade ─────────────────────────────────── */
+function calcMaterial(l){
+  const w=[], q=num(l.quantity), rate=num(l.unitRate), fx=num(l.fxRate,1)||1;
+  if(q<=0) w.push(`"${l.description}": quantity is zero — line contributes nothing.`);
+  if(rate<=0) w.push(`"${l.description}": no rate captured. Link a vendor quote or material master.`);
+  if(l.sourceCurrency&&fx===1&&l.sourceCurrency!=='INR')
+    w.push(`"${l.description}": ${l.sourceCurrency} line is using an FX rate of 1.0 — verify the rate.`);
+
+  const eq = q*(1+pct(clamp(num(l.yieldLossPct),0,LIM.maxPct)))*(1+pct(clamp(num(l.wastagePct),0,LIM.maxPct)));
+  const ex = roundTo(rate*fx*eq);
+  const fr = roundTo(ex*pct(clamp(num(l.freightPct),0,LIM.maxPct)));
+  const ins= roundTo(ex*pct(clamp(num(l.insurancePct),0,LIM.maxPct)));
+  const av = roundTo(ex+fr+ins);                                   // CIF assessable value
+  const duty=roundTo(av*pct(clamp(num(l.customsDutyPct),0,LIM.maxPct)));
+  const land=roundTo((av+duty)*pct(clamp(num(l.landingPct),0,LIM.maxPct)));
+  const scrap=roundTo(ex*pct(clamp(num(l.scrapRecoveryPct),0,100)));
+  const taxable=av+duty+land;
+  const tax=roundTo(taxable*pct(clamp(num(l.taxPct),0,LIM.maxPct)));
+  let cost=roundTo(taxable-scrap+(l.taxIsCost?tax:0));
+  if(l.excluded) cost=0;
+  return {lineId:l.id,category:l.category,kind:'MATERIAL',description:l.description,cost,warnings:w,taxAmount:tax,
+    breakdown:{quantity:q,effectiveQty:roundTo(eq,6),unitRate:rate,fxRate:fx,exWorks:ex,freight:fr,insurance:ins,
+      assessableValue:av,customsDuty:duty,landing:land,scrapCredit:scrap,taxAmount:tax}};
+}
+
+/* ── Process: setup amortisation + availability recovery ───────────────────────────── */
+function calcProcess(l){
+  const w=[], rate=num(l.ratePerHour), q=Math.max(num(l.quantity,1),0);
+  if(rate<=0) w.push(`"${l.description}": no machine-hour rate for ${l.processCode}. Check the Process Rate master.`);
+  const rawU=num(l.utilizationPct,100), rawE=num(l.efficiencyPct,100);
+  const util=clamp(rawU||100,LIM.minUtil,LIM.maxUtil), eff=clamp(rawE||100,LIM.minEff,LIM.maxEff);
+  if(rawU!==0&&rawU!==util) w.push(`"${l.description}": utilisation ${rawU}% is out of range and was clamped to ${util}%.`);
+  if(rawE!==0&&rawE!==eff) w.push(`"${l.description}": efficiency ${rawE}% is out of range and was clamped to ${eff}%.`);
+
+  const batch=Math.max(num(l.batchSize,1),1);
+  const setupH=safeDiv(num(l.setupTimeMinutes),60)/batch;      // setup spread across the batch
+  const cycleH=safeDiv(num(l.cycleTimeMinutes),60);
+  const derived=(setupH+cycleH)*q;
+  const std=(l.hoursOverride!=null&&num(l.hoursOverride)>0)?num(l.hoursOverride):derived;
+  /* Utilisation and efficiency DIVIDE — they are availability factors. A work centre
+     available 80% of the time needs 1/0.8 clock-hours per standard hour, which is the
+     basis the plant's machine-hour rate was built on. */
+  const effH=safeDiv(safeDiv(std,eff/100),util/100);
+  const scrapPct=clamp(num(l.scrapAllowancePct),0,LIM.maxPct);
+  const billable=roundTo(effH*(1+pct(scrapPct)),6);
+  if(std<=0&&rate>0) w.push(`"${l.description}": no cycle time or setup time captured — the operation costs nothing.`);
+  let cost=roundTo(billable*rate); if(l.excluded) cost=0;
+  return {lineId:l.id,category:l.category,kind:'PROCESS',description:l.description,cost,warnings:w,
+    hours:l.excluded?0:billable,
+    breakdown:{quantity:q,batchSize:batch,setupHours:roundTo(setupH,6),cycleHours:roundTo(cycleH,6),
+      standardHours:roundTo(std,6),utilizationPct:util,efficiencyPct:eff,scrapAllowancePct:scrapPct,
+      billableHours:billable,ratePerHour:rate}};
+}
+
+/* ── Effort: NRE amortisation ──────────────────────────────────────────────────────── */
+function calcEffort(l){
+  const w=[], rate=num(l.ratePerHour), head=Math.max(num(l.headcount,1),1), hpd=num(l.hoursPerDay,8)||8;
+  const hours=(l.hours!=null&&num(l.hours)>0)?num(l.hours):num(l.manDays)*hpd;
+  if(rate<=0) w.push(`"${l.description}": no charge-out rate for ${l.discipline}. Check the Design/Labour Rate master.`);
+  if(hours<=0) w.push(`"${l.description}": no effort captured.`);
+  const ot=clamp(num(l.overtimePct),0,LIM.maxPct);
+  const gross=roundTo(hours*head*rate*(1+pct(ot)));
+  const aq=Math.max(num(l.amortizationQty),0), amort=Boolean(l.nre)&&aq>0;
+  let cost=amort?roundTo(safeDiv(gross,aq)):gross;
+  if(l.nre&&!amort) w.push(`"${l.description}": NRE is fully charged to this estimate — set an amortisation volume to spread it.`);
+  if(l.excluded) cost=0;
+  return {lineId:l.id,category:l.category,kind:'EFFORT',description:l.description,cost,warnings:w,
+    hours:l.excluded?0:roundTo(hours*head,4),
+    breakdown:{hours:roundTo(hours,4),headcount:head,hoursPerDay:hpd,ratePerHour:rate,overtimePct:ot,
+      grossEffortCost:gross,amortizationQty:aq,amortised:amort?1:0,foak:l.foak?1:0}};
+}
+
+/* ── Expense: four bases ───────────────────────────────────────────────────────────── */
+function calcExpense(l,base=0){
+  const w=[]; let cost=0; const b={};
+  switch(l.basis){
+    case 'LUMPSUM': cost=roundTo(num(l.amount)); b.amount=cost; break;
+    case 'PER_UNIT': { const r=num(l.amount), u=Math.max(num(l.days,1),1); cost=roundTo(r*u); b.ratePerUnit=r; b.units=u; break; }
+    case 'PER_DAY': { const r=num(l.amount), d=Math.max(num(l.days),0), h=Math.max(num(l.headcount,1),1);
+      cost=roundTo(r*d*h); b.ratePerDay=r; b.days=d; b.headcount=h;
+      if(d<=0) w.push(`"${l.description}": per-day expense with zero days.`); break; }
+    case 'PERCENT_OF_BASE': { const p=clamp(num(l.percent),0,LIM.maxPct); cost=roundTo(base*pct(p)); b.percent=p; b.base=roundTo(base); break; }
+    default: w.push(`"${l.description}": unknown expense basis — treated as zero.`);
+  }
+  if(l.excluded) cost=0;
+  return {lineId:l.id,category:l.category,kind:'EXPENSE',description:l.description,cost,warnings:w,breakdown:b};
+}
+
+/* ── AMC: compounding escalation ───────────────────────────────────────────────────── */
+function calcAmc(l){
+  const w=[], year=clamp(Math.round(num(l.year,1)),1,LIM.maxAmcYears);
+  if(num(l.year)>LIM.maxAmcYears) w.push(`"${l.description}": AMC year ${l.year} exceeds the 15-year horizon and was clamped.`);
+  const base=num(l.baseAnnualCost)+num(l.sparesProvision);
+  const esc=clamp(num(l.escalationPct),0,100), f=(1+pct(esc))**(year-1);
+  let cost=roundTo(base*f); if(l.excluded) cost=0;
+  const m=clamp(num(l.marginPct),0,LIM.maxMargin);
+  const revenue=roundTo(safeDiv(cost,1-pct(m),cost));
+  if(base<=0) w.push(`"${l.description}": AMC year ${year} has no cost to serve captured.`);
+  return {lineId:l.id,category:'AMC',kind:'AMC',description:l.description,cost,warnings:w,
+    breakdown:{year,baseAnnualCost:num(l.baseAnnualCost),sparesProvision:num(l.sparesProvision),
+      escalationPct:esc,escalationFactor:roundTo(f,6),marginPct:m,revenue,visitsPerYear:num(l.visitsPerYear)}};
+}
+
+function calcLine(l,base=0){
+  switch(l.kind){
+    case 'MATERIAL': return calcMaterial(l);
+    case 'PROCESS':  return calcProcess(l);
+    case 'EFFORT':   return calcEffort(l);
+    case 'EXPENSE':  return calcExpense(l,base);
+    case 'AMC':      return calcAmc(l);
+    default: return {lineId:l.id,category:l.category,kind:l.kind,description:l.description||'Unknown line',
+      cost:0,breakdown:{},warnings:[`Unsupported line kind "${l.kind}" — ignored.`]};
+  }
+}
+
+function resolveBase(b,t){
+  switch(b){ case 'MATERIAL_COST':return t.material; case 'CONVERSION_COST':return t.conversion;
+    case 'FACTORY_COST':return t.factory; case 'SELLING_PRICE':return t.price; default:return t.direct }
+}
+function applyOverheads(p,t){
+  const at=(v,b)=>roundTo(resolveBase(b,t)*pct(clamp(num(v),0,LIM.maxPct)));
+  const sga=at(p.sgaPct,p.sgaBase), admin=at(p.adminPct,p.adminBase), warranty=at(p.warrantyPct,p.warrantyBase),
+        risk=at(p.riskPct,p.riskBase), contingency=at(p.contingencyPct,p.contingencyBase), finance=at(p.financePct,p.financeBase);
+  return {sga,admin,warranty,risk,contingency,finance,total:roundTo(sga+admin+warranty+risk+contingency+finance)};
+}
+
+/* ── Pricing ───────────────────────────────────────────────────────────────────────── */
+function derivePrice(totalCost,pricing,step=0){
+  const w=[]; let price;
+  switch(pricing.mode){
+    case 'MARKUP_ON_COST': price=totalCost*(1+pct(clamp(num(pricing.markupPct),0,10000))); break;
+    case 'FIXED_PRICE': price=num(pricing.fixedPrice);
+      if(price<=0){ w.push('Fixed-price mode selected but no customer price captured — falling back to cost.'); price=totalCost; } break;
+    default: { /* MARGIN_ON_SALES: price = cost/(1−margin) so (price−cost)/price ≡ margin */
+      const raw=num(pricing.targetMarginPct), m=clamp(raw,0,LIM.maxMargin);
+      if(raw>=100) w.push(`Target margin of ${raw}% is not achievable on a margin-on-sales basis and was clamped to ${LIM.maxMargin}%.`);
+      price=safeDiv(totalCost,1-pct(m),totalCost); }
+  }
+  if(step>0) price=Math.ceil(price/step)*step;
+  return {price:roundTo(price,2),warnings:w};
+}
+
+/* ── Whole-estimate roll-up: three passes ──────────────────────────────────────────── */
+function calculateEstimate(input){
+  const warnings=[], quantity=Math.max(num(input.quantity,1),1);
+  if(num(input.quantity,1)<1) warnings.push('Estimate quantity was below 1 and has been treated as 1.');
+  const lines=input.lines||[];
+
+  /* Pass 1 — fixed lines */
+  const deferred=[], results=new Map();
+  for(const l of lines){
+    if(l.kind==='EXPENSE'&&l.basis==='PERCENT_OF_BASE'){ deferred.push(l); continue }
+    results.set(l.id,calcLine(l));
+  }
+  const costOf=p=>roundTo(sum([...results.values()].filter(p).map(r=>r.cost)));
+  const d1=costOf(r=>DIRECT.includes(r.category)), m1=costOf(r=>r.category==='MATERIAL'), c1=roundTo(d1-m1);
+
+  /* Pass 2 — overheads, provisional price, then percentage expenses */
+  const oh1=applyOverheads(input.overhead,{direct:d1,material:m1,conversion:c1,factory:d1,price:0});
+  const f1=roundTo(d1+oh1.total);
+  const prov=derivePrice(roundTo(f1+costOf(r=>r.category==='COMMERCIAL')),input.pricing,0);
+  const bases={direct:d1,material:m1,conversion:c1,factory:f1,price:prov.price};
+  for(const l of deferred) results.set(l.id,calcExpense(l,resolveBase(l.percentBase,bases)));
+
+  /* Pass 3 — final */
+  const directCost=costOf(r=>DIRECT.includes(r.category));
+  const materialCost=costOf(r=>r.category==='MATERIAL');
+  const conversionCost=roundTo(directCost-materialCost);
+  const commercialCost=costOf(r=>r.category==='COMMERCIAL');
+  const overheads=applyOverheads(input.overhead,
+    {direct:directCost,material:materialCost,conversion:conversionCost,factory:roundTo(directCost+oh1.total),price:prov.price});
+  const factoryCost=roundTo(directCost+overheads.total);
+
+  const amcLines=lines.filter(l=>l.kind==='AMC');
+  const byYear=new Map();
+  for(const l of amcLines){ const r=results.get(l.id); if(!r) continue;
+    const y=clamp(Math.round(num(l.year,1)),1,LIM.maxAmcYears);
+    const e=byYear.get(y)||{cost:0,revenue:0};
+    e.cost=roundTo(e.cost+r.cost); e.revenue=roundTo(e.revenue+num(r.breakdown.revenue)); byYear.set(y,e); }
+  const years=[...byYear.entries()].sort((a,b)=>a[0]-b[0]).map(([year,v])=>{
+    const margin=roundTo(v.revenue-v.cost); return {year,cost:v.cost,revenue:v.revenue,margin,marginPct:share(margin,v.revenue)} });
+  const amcTotalCost=roundTo(sum(years.map(y=>y.cost))), amcTotalRevenue=roundTo(sum(years.map(y=>y.revenue)));
+  const amcTotalMargin=roundTo(amcTotalRevenue-amcTotalCost);
+  const amc={years,totalCost:amcTotalCost,totalRevenue:amcTotalRevenue,totalMargin:amcTotalMargin,marginPct:share(amcTotalMargin,amcTotalRevenue)};
+
+  const amcInMachine=input.includeAmcInMachinePrice?amcTotalCost:0;
+  const totalCost=roundTo(factoryCost+commercialCost+amcInMachine);
+  const {price:machinePrice,warnings:pw}=derivePrice(totalCost,input.pricing,num(input.priceRoundingStep));
+  warnings.push(...pw);
+  const sellingPrice=input.includeAmcInMachinePrice?roundTo(machinePrice+amcTotalMargin,2):machinePrice;
+  const grossMargin=roundTo(sellingPrice-totalCost,2), marginPct=share(grossMargin,sellingPrice);
+  /* Indicative EBITDA adds SG&A and admin recovery back — they are period costs already
+     carried in the corporate P&L, not cash outflows attributable to this order. */
+  const ebitda=roundTo(grossMargin+overheads.sga+overheads.admin,2);
+
+  const ordered=[];
+  for(const l of lines){ const r=results.get(l.id); if(!r) continue;
+    ordered.push({...r,groupPath:l.groupPath||'',costPerUnit:roundTo(safeDiv(r.cost,quantity))}) }
+
+  const categories=CATS.map(category=>{
+    const rows=ordered.filter(r=>r.category===category);
+    const cost=roundTo(sum(rows.map(r=>r.cost)));
+    const groups=new Map();
+    for(const r of rows){ const g=groups.get(r.groupPath)||{cost:0,lineCount:0};
+      g.cost=roundTo(g.cost+r.cost); g.lineCount++; groups.set(r.groupPath,g) }
+    return {category,cost,costPerUnit:roundTo(safeDiv(cost,quantity),2),
+      sharePct:DIRECT.includes(category)?share(cost,directCost):0,lineCount:rows.length,
+      hours:roundTo(sum(rows.map(r=>r.hours||0)),4),
+      groups:[...groups.entries()].map(([path,v])=>({path,...v}))};
+  });
+
+  for(const r of ordered) warnings.push(...(r.warnings||[]));
+  /* Estimate-level checks a reviewer would otherwise catch by eye */
+  if(lines.length===0) warnings.push('This estimate has no cost lines yet.');
+  else{
+    if(directCost<=0) warnings.push('Direct cost is zero — check that rates have been captured against the cost lines.');
+    const ms=share(materialCost,directCost);
+    if(directCost>0&&ms>92) warnings.push(`Material is ${ms}% of direct cost. Conversion effort (machining, assembly, engineering) looks under-captured.`);
+    if(directCost>0&&materialCost===0) warnings.push('No material cost captured — verify the BOM has been imported.');
+    if(marginPct<0) warnings.push(`Gross margin is negative (${marginPct}%). The quoted price does not recover cost.`);
+    else if(marginPct>0&&marginPct<8) warnings.push(`Gross margin of ${marginPct}% is below the 8% commercial floor and needs Business Head approval.`);
+  }
+
+  return {estimateId:input.id,currency:input.currency,quantity,lines:ordered,categories,
+    directCost,conversionCost,factoryCost,overheads,commercialCost,totalCost,
+    sellingPrice,grossMargin,marginPct,ebitda,ebitdaPct:share(ebitda,sellingPrice),
+    totalCostPerUnit:roundTo(safeDiv(totalCost,quantity),2),
+    sellingPricePerUnit:roundTo(safeDiv(sellingPrice,quantity),2),
+    amc,
+    totalMachineHours:roundTo(sum(ordered.filter(r=>r.kind==='PROCESS').map(r=>r.hours||0)),4),
+    totalEffortHours:roundTo(sum(ordered.filter(r=>r.kind==='EFFORT').map(r=>r.hours||0)),4),
+    warnings:[...new Set(warnings)],engineVersion:ENGINE_VERSION};
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   2. RBAC — same permission strings and matcher as @teal/shared
+   ═══════════════════════════════════════════════════════════════════════════════════════ */
+function hasPermission(granted,required){
+  if(!granted||!granted.length) return false;
+  if(granted.includes('*')||granted.includes(required)) return true;
+  const [rm,rr,ra]=required.split('.');
+  for(const g of granted){ const [gm,gr,ga]=g.split('.');
+    if(gm!=='*'&&gm!==rm) continue; if(gr!=='*'&&gr!==rr) continue; if(ga!=='*'&&ga!==ra) continue; return true }
+  return false;
+}
+const can=p=>hasPermission(S.user?S.user.permissions:[],p);
+
+/* Field-level policy. Keys must match persisted column names exactly — a key naming a
+   field that does not exist silently protects nothing (this was a real defect, fixed). */
+const FIELD_POLICY={
+  targetMarginPct:'estimate.margin.view', marginPct:'estimate.margin.view',
+  grossMargin:'estimate.margin.view', ebitda:'estimate.margin.view', amcTotalMargin:'estimate.margin.view',
+  sellingPrice:'estimate.pricing.view', sellingPricePerUnit:'estimate.pricing.view',
+  sgaPct:'estimate.margin.view', adminPct:'estimate.margin.view', warrantyPct:'estimate.margin.view',
+  riskPct:'estimate.margin.view', contingencyPct:'estimate.margin.view', financePct:'estimate.margin.view',
+};
+/** Null out fields the caller may not read — the same shape the API returns, `_masked` and all. */
+function mask(obj){
+  const out={...obj}, masked=[];
+  for(const [f,perm] of Object.entries(FIELD_POLICY)){
+    if(!(f in out)) continue;
+    if(can(perm)) continue;
+    out[f]=null; masked.push(f);
+  }
+  if(masked.length) out._masked=masked;
+  return out;
+}
+const SHOW=v=>v==null?'<span class="locked">••••</span>':v;
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   3. SEED — the same data the Prisma seed inserts
+   ═══════════════════════════════════════════════════════════════════════════════════════ */
+const ROLES={
+  BUSINESS_HEAD:{name:'Business Head',rank:85,scope:'GLOBAL',
+    permissions:['dashboard.*.view','analytics.*.view','project.project.view','estimate.estimate.view',
+      'estimate.pricing.*','estimate.margin.*','costing.*.view','workflow.approval.approve','workflow.approval.view',
+      'report.*.view','master.master.view','audit.trail.view']},
+  BU_HEAD:{name:'BU Head — Semiconductor',rank:75,scope:'BUSINESS_UNIT',bu:'SEMI',
+    permissions:['dashboard.bu.view','dashboard.department.view','analytics.*.view','project.project.*',
+      'estimate.estimate.view','estimate.pricing.*','estimate.margin.*','costing.*.view',
+      'workflow.approval.approve','workflow.approval.view','report.*.view','master.master.view']},
+  COSTING_MANAGER:{name:'Costing Manager',rank:70,scope:'BUSINESS_UNIT',bu:'SEMI',
+    permissions:['dashboard.*.view','analytics.*.view','project.project.view','estimate.*.*','costing.*.*',
+      'master.master.*','master.rate.*','workflow.approval.approve','workflow.approval.view','report.*.view','audit.trail.view']},
+  FINANCE:{name:'Finance Controller',rank:70,scope:'GLOBAL',
+    permissions:['dashboard.*.view','analytics.*.view','project.project.view','estimate.estimate.view',
+      'estimate.pricing.*','estimate.margin.*','costing.*.view','master.master.view','master.rate.*',
+      'workflow.approval.approve','workflow.approval.view','report.*.view','audit.trail.view']},
+  COST_ENGINEER:{name:'Cost Engineer',rank:45,scope:'BUSINESS_UNIT',bu:'SEMI',
+    permissions:['dashboard.department.view','project.project.view','estimate.estimate.view',
+      'estimate.estimate.create','estimate.estimate.edit','costing.*.*','workflow.submission.create',
+      'workflow.approval.view','report.internal_cost_sheet.view','master.master.view','master.rate.view']},
+  SALES:{name:'Regional Sales Manager',rank:50,scope:'BUSINESS_UNIT',bu:'SEMI',
+    permissions:['dashboard.bu.view','analytics.pipeline.view','project.project.*','estimate.estimate.view',
+      'estimate.pricing.view','workflow.submission.create','workflow.approval.view',
+      'report.customer_cost_sheet.view','report.quotation.view']},
+};
+const USERS=[
+  {id:'u1',first:'Arun',last:'Mehta',email:'arun.mehta@teal.co.in',role:'BUSINESS_HEAD',title:'Head — Engineering & Automation'},
+  {id:'u2',first:'Kavitha',last:'Rao',email:'kavitha.rao@teal.co.in',role:'BU_HEAD',title:'Business Unit Head'},
+  {id:'u3',first:'Suresh',last:'Nair',email:'suresh.nair@teal.co.in',role:'COSTING_MANAGER',title:'Manager — Costing & Estimation'},
+  {id:'u4',first:'Lakshmi',last:'Venkat',email:'lakshmi.venkat@teal.co.in',role:'FINANCE',title:'Finance Controller'},
+  {id:'u5',first:'Priya',last:'Raman',email:'priya.raman@teal.co.in',role:'COST_ENGINEER',title:'Senior Cost Engineer'},
+  {id:'u6',first:'Sanjay',last:'Kulkarni',email:'sanjay.kulkarni@teal.co.in',role:'SALES',title:'Regional Sales Manager'},
+];
+
+/* The 45-process machine-hour master (rate build-up retained so Finance can defend it). */
+const PROCESSES=[
+  ['CNC_MILLING','CNC Milling','MACHINING',1450,90,82,90,2],['MANUAL_MILLING','Manual Milling','MACHINING',620,45,75,80,3],
+  ['CNC_TURNING','CNC Turning','MACHINING',1180,60,84,90,2],['MANUAL_TURNING','Manual Turning','MACHINING',540,30,75,80,3],
+  ['SURFACE_GRINDING','Surface Grinding','MACHINING',780,40,78,85,2],['CYLINDRICAL_GRINDING','Cylindrical Grinding','MACHINING',920,50,78,85,2],
+  ['TOOL_GRINDING','Tool Grinding','MACHINING',860,35,74,82,3],['WIRE_EDM','Wire EDM','MACHINING',1620,75,88,92,1],
+  ['SINKER_EDM','Sinker EDM','MACHINING',1520,85,85,90,1],['TAPPING','Tapping','MACHINING',480,15,80,85,2],
+  ['THREADING','Threading','MACHINING',560,20,80,85,2],['BAND_SAW','Band Saw','CUTTING',380,12,80,85,4],
+  ['LASER_CUTTING','Laser Cutting','CUTTING',2400,25,88,94,3],['WATERJET','Waterjet Cutting','CUTTING',2100,30,85,90,3],
+  ['PLASMA_CUTTING','Plasma Cutting','CUTTING',1250,20,84,88,4],['BENDING','Press Brake Bending','FORMING',980,35,80,85,3],
+  ['ROLLING','Plate Rolling','FORMING',860,40,78,82,3],['FABRICATION','Fabrication','FORMING',720,60,75,80,5],
+  ['TIG_WELDING','TIG Welding','JOINING',840,30,70,78,4],['MIG_WELDING','MIG Welding','JOINING',760,25,72,80,4],
+  ['SPOT_WELDING','Spot Welding','JOINING',620,20,78,85,3],['BRAZING','Brazing','JOINING',700,25,72,78,4],
+  ['DEBURRING','Deburring','FINISHING',420,8,80,85,1],['POLISHING','Polishing','FINISHING',520,15,76,80,2],
+  ['BUFFING','Buffing','FINISHING',480,12,76,80,2],['BALANCING','Dynamic Balancing','FINISHING',1350,45,80,88,1],
+  ['CLEANING','Ultrasonic Cleaning','FINISHING',380,10,85,90,0],['HEAT_TREATMENT','Heat Treatment','TREATMENT',1150,120,90,95,3],
+  ['SHOT_BLASTING','Shot Blasting','TREATMENT',640,20,82,88,1],['SAND_BLASTING','Sand Blasting','TREATMENT',580,20,82,88,1],
+  ['OXIDATION','Black Oxidation','TREATMENT',540,30,85,90,2],['ANODIZING','Anodizing','COATING',760,45,85,90,3],
+  ['PAINTING','Painting','COATING',680,40,78,85,4],['POWDER_COATING','Powder Coating','COATING',820,50,82,88,3],
+  ['NICKEL_PLATING','Nickel Plating','COATING',940,55,84,90,3],['CHROME_PLATING','Chrome Plating','COATING',1080,60,84,90,3],
+  ['ZINC_PLATING','Zinc Plating','COATING',720,45,85,90,3],['INSPECTION','Inspection','INSPECTION',660,10,80,88,0],
+  ['CMM_MEASUREMENT','CMM Measurement','INSPECTION',1750,35,82,90,0],['LASER_MARKING','Laser Marking','INSPECTION',950,15,86,92,1],
+  ['ASSEMBLY','Assembly','ASSEMBLY',700,30,78,82,1],['TESTING','Testing & Trials','ASSEMBLY',880,45,75,80,2],
+  ['PACKING','Packing','LOGISTICS',450,15,80,85,0],['DISPATCH','Dispatch','LOGISTICS',420,10,80,85,0],
+  ['OTHER','Other / Custom Process','OTHER',600,20,80,85,2],
+].map(([code,name,group,rate,setup,util,eff,scrap])=>({code,name,group,rate,setup,util,eff,scrap}));
+const PROC=Object.fromEntries(PROCESSES.map(p=>[p.code,p]));
+const GROUP_LABEL={MACHINING:'Machining',CUTTING:'Cutting',FORMING:'Forming',JOINING:'Joining & Welding',
+  FINISHING:'Finishing',TREATMENT:'Heat & Surface Treatment',COATING:'Plating & Coating',
+  INSPECTION:'Inspection & Marking',ASSEMBLY:'Assembly & Testing',LOGISTICS:'Packing & Dispatch',OTHER:'Other'};
+
+/* ── Cost lines: the real 74-line wafer-handler estimate ───────────────────────────── */
+let _id=0; const nid=()=>`l${++_id}`;
+/**
+ * Material line.
+ *
+ * `o` carries the per-line landed-cost drivers EXPLICITLY rather than inferring them from
+ * the unit of measure. An earlier version guessed — applying 1.5% freight to every domestic
+ * line and 8%/4% wastage to everything priced by weight — and silently diverged from the
+ * Prisma seed by ₹52,440 on the wafer handler, because five LOT/SET lines carry no freight
+ * at all. The console self-check at the bottom of this file caught it. Inference is the
+ * wrong tool for figures that have to reconcile.
+ */
+function M(desc,part,qty,rate,uom,grp,cat='MATERIAL',o={}){
+  const imp=!!o.imported;
+  return {id:nid(),kind:'MATERIAL',category:cat,description:desc,partNumber:part,groupPath:grp,uom,
+    quantity:qty,unitRate:rate,
+    sourceCurrency:imp?'EUR':'INR',fxRate:imp?90.75:1,
+    freightPct:o.freight??(imp?6:0),
+    insurancePct:o.insurance??(imp?0.5:0),
+    customsDutyPct:o.duty??(imp?7.5:0),
+    landingPct:o.landing??(imp?1.2:0),
+    wastagePct:o.wastage??0,scrapRecoveryPct:o.scrap??0,taxPct:18};
+}
+/** Domestic line carrying the standard 1.5% inbound freight. */
+const MF=(d,p,q,r,u,g,c='MATERIAL',o={})=>M(d,p,q,r,u,g,c,{freight:1.5,...o});
+function P(desc,code,qty,cycle,batch,grp){ const p=PROC[code];
+  return {id:nid(),kind:'PROCESS',category:'MANUFACTURING',description:desc,groupPath:grp,processCode:code,
+    ratePerHour:p.rate,quantity:qty,cycleTimeMinutes:cycle,setupTimeMinutes:p.setup,batchSize:batch,
+    utilizationPct:p.util,efficiencyPct:p.eff,scrapAllowancePct:p.scrap};
+}
+function E(desc,disc,grade,rate,hours,cat,grp,foak=false,amort=0){
+  return {id:nid(),kind:'EFFORT',category:cat,description:desc,groupPath:grp,discipline:disc,resourceGrade:grade,
+    ratePerHour:rate,hours,headcount:1,hoursPerDay:8,foak,nre:foak,amortizationQty:amort};
+}
+function X(desc,basis,amount,cat,grp,days,head,percent,pbase){
+  return {id:nid(),kind:'EXPENSE',category:cat,description:desc,groupPath:grp,basis,amount,days,headcount:head,
+    percent,percentBase:pbase};
+}
+function A(year,base,esc,margin,spares,visits){
+  return {id:nid(),kind:'AMC',category:'AMC',description:`AMC year ${year} — Standard tier (4 PM visits, 48 h response)`,
+    groupPath:'AMC',tier:'STANDARD',year,baseAnnualCost:base,escalationPct:esc,marginPct:margin,
+    sparesProvision:spares,visitsPerYear:visits};
+}
+
+const WAFER_LINES=[
+  // Mechanical material — 1.5% inbound freight; weight-priced items carry wastage + scrap credit
+  MF('Linear guideway HGR20 — 1200 mm rail','HGR20-1200',4,8450,'NOS','Transfer Axis'),
+  MF('Linear guide block HGW20CC','HGW20CC',8,3200,'NOS','Transfer Axis'),
+  MF('Ball screw 16×10, 800 mm C5','BSF1610-800',2,14500,'NOS','Transfer Axis'),
+  M('Schunk PGN-plus 80 parallel gripper','PGN-PLUS-80-1',2,1250,'NOS','End Effector','MATERIAL',{imported:true}),
+  MF('Aluminium extrusion 40×40 slot profile','ALU-EXT-4040',48,720,'MTR','Frame'),
+  MF('Aluminium 6061-T6 plate 20 mm — base','AL-6061-T6-PLATE',185,385,'KG','Frame','MATERIAL',{wastage:8,scrap:4}),
+  MF('SS304 sheet 3 mm — mini-environment panels','SS-304-SHEET-3',240,295,'KG','Mini-Environment','MATERIAL',{wastage:8,scrap:4}),
+  MF('MS plate 12 mm — machine base weldment','MS-IS2062-PLATE',420,78,'KG','Frame','MATERIAL',{wastage:8,scrap:4}),
+  // Electrical material — 1.5% freight
+  MF('Yaskawa AC servo motor 750 W','SGM7J-08AFA21',6,38500,'NOS','Motion','ELECTRICAL'),
+  MF('Yaskawa servo amplifier 750 W','SGD7S-7R6A00A',6,42000,'NOS','Motion','ELECTRICAL'),
+  MF('Siemens S7-1500 CPU 1515-2 PN','6ES7515-2AM02',1,168000,'NOS','Controls','ELECTRICAL'),
+  MF('Siemens TP1200 Comfort HMI','6AV2124-0MC01',1,142000,'NOS','Controls','ELECTRICAL'),
+  MF('S7-1500 analog input module','6ES7531-7KF00',2,34500,'NOS','Controls','ELECTRICAL'),
+  MF('Keyence vision camera — wafer presence & ID','IV3-500CA',2,285000,'NOS','Vision','ELECTRICAL'),
+  MF('Keyence laser displacement sensor','LR-TB5000C',6,46500,'NOS','Sensors','ELECTRICAL'),
+  MF('Keyence contact displacement sensor — aligner','GT2-H12K',2,52000,'NOS','Sensors','ELECTRICAL'),
+  MF('Rittal control panel 1000×800×300 IP55','TS-8-1000',1,42000,'NOS','Panel','ELECTRICAL'),
+  MF('SMC parallel gripper 16 mm','MHZ2-16D',4,9800,'NOS','Pneumatics','ELECTRICAL'),
+  MF('SMC compact cylinder 32×50','CDQ2B32-50DZ',8,4200,'NOS','Pneumatics','ELECTRICAL'),
+  MF('SMC solenoid valve 5-port 24 VDC','SY5120-5LZD',12,3400,'NOS','Pneumatics','ELECTRICAL'),
+  // Bought-in as delivered assemblies — no separate inbound freight line
+  M('Cables, connectors, drag chain and cable management set',null,1,185000,'LOT','Cabling','ELECTRICAL'),
+  M('Safety relays, light curtains, E-stop circuit and interlocks (SEMI S2)',null,1,275000,'LOT','Safety','ELECTRICAL'),
+  M('Terminal blocks, MCBs, contactors, SMPS and panel hardware',null,1,96000,'LOT','Panel','ELECTRICAL'),
+  M('FFU fan filter units, ULPA filters and pressure monitoring — Class 1',null,1,640000,'SET','Mini-Environment','AUTOMATION'),
+  M('FOUP load port modules, 2 × 300 mm E84 compliant',null,2,1150000,'NOS','Load Port','AUTOMATION'),
+  // Manufacturing
+  P('CNC machining — robot base and mounting plates','CNC_MILLING',18,240,1,'Frame'),
+  P('CNC turning — shafts, spacers and bushings','CNC_TURNING',24,45,4,'Transfer Axis'),
+  P('Wire EDM — precision aligner components','WIRE_EDM',6,180,1,'Aligner'),
+  P('Surface grinding — datum faces','SURFACE_GRINDING',12,60,2,'Frame'),
+  P('Laser cutting — SS304 enclosure panels','LASER_CUTTING',36,25,6,'Mini-Environment'),
+  P('Press brake bending — enclosure panels','BENDING',36,18,6,'Mini-Environment'),
+  P('TIG welding — SS mini-environment frame','TIG_WELDING',1,960,1,'Mini-Environment'),
+  P('MIG welding — MS machine base weldment','MIG_WELDING',1,720,1,'Frame'),
+  P('Deburring and edge preparation','DEBURRING',120,8,20,'General'),
+  P('Hard anodising — aluminium structural parts','ANODIZING',42,35,8,'Frame'),
+  P('Powder coating — machine base','POWDER_COATING',1,240,1,'Frame'),
+  P('Ultrasonic clean and cleanroom wipe-down','CLEANING',1,480,1,'Cleanroom'),
+  P('Cleanroom mechanical assembly','ASSEMBLY',1,5760,1,'Assembly'),
+  P('CMM inspection — critical dimensions','CMM_MEASUREMENT',24,30,4,'Quality'),
+  P('In-process and final inspection','INSPECTION',1,720,1,'Quality'),
+  P('Particle testing, repeatability trials and burn-in','TESTING',1,2880,1,'Testing'),
+  P('Laser marking — nameplates and traceability','LASER_MARKING',40,6,10,'General'),
+  P('Cleanroom packing, double bagging and crating','PACKING',1,480,1,'Dispatch'),
+  // Design
+  E('Concept design, layout and SEMI S2 compliance strategy','MECHANICAL_DESIGN','Principal Engineer',1850,22,'DESIGN','Concept',true,6),
+  E('Detailed mechanical design — robot, aligner, transfer axis','MECHANICAL_DESIGN','Senior Engineer',1350,68,'DESIGN','Detail Design',true,6),
+  E('Manufacturing drawings, GD&T and BOM release','MECHANICAL_DESIGN','Engineer',950,55,'DESIGN','Detail Design'),
+  E('FEA on the base weldment and modal analysis','SIMULATION','Specialist',1750,16,'DESIGN','Analysis',true,6),
+  E('CFD — mini-environment airflow and particle transport','SIMULATION','Specialist',1750,20,'DESIGN','Analysis',true,6),
+  E('Electrical schematics, panel layout and cable schedules','ELECTRICAL_DESIGN','Senior Engineer',1300,42,'DESIGN','Electrical'),
+  E('Motion architecture, safety circuit and SEMI E84 interface','CONTROLS','Senior Engineer',1450,38,'DESIGN','Controls',true,6),
+  E('O&M manuals, spare parts list and SEMI compliance dossier','DOCUMENTATION','Technical Writer',680,44,'DESIGN','Documentation'),
+  E('Project management through design, build and site acceptance','PROJECT_MANAGEMENT','Project Manager',1500,96,'DESIGN','PM'),
+  // Software
+  E('PLC application — sequence, recipes, interlocks and diagnostics','SOFTWARE','Senior Engineer',1550,128,'SOFTWARE','Software',true,6),
+  E('HMI development — operator screens, alarms and trending','SOFTWARE','Engineer',1150,76,'SOFTWARE','Software',true,6),
+  E('Vision application — wafer presence, ID read and OCR','VISION','Senior Engineer',1650,64,'SOFTWARE','Software',true,6),
+  E('Robot path programming, teach and repeatability tuning','ROBOTICS','Senior Engineer',1600,88,'SOFTWARE','Software',true,6),
+  E('SECS/GEM host interface and equipment data collection','SOFTWARE','Senior Engineer',1550,96,'SOFTWARE','Software',true,6),
+  // Labour
+  E('Electrical panel building and wiring','MECHANICAL_DESIGN','Technician',420,180,'LABOUR','Shop Floor'),
+  E('Machine wiring, dressing and continuity checks','MECHANICAL_DESIGN','Technician',480,220,'LABOUR','Shop Floor'),
+  E('Pneumatic plumbing and leak testing','MECHANICAL_DESIGN','Technician',520,64,'LABOUR','Shop Floor'),
+  E('Integration, alignment and dry-run','MECHANICAL_DESIGN','Technician',520,240,'LABOUR','Shop Floor'),
+  // Site
+  X('Commissioning engineers on site — Sanand','PER_DAY',9500,'SITE','Deployment',28,2),
+  X('Travel, accommodation and per diem','PER_DAY',4800,'SITE','Deployment',28,2),
+  X('Site tooling, calibration equipment and consumables','LUMPSUM',185000,'SITE','Deployment'),
+  X('Contingency revisit provision (1 trip, 5 days)','LUMPSUM',140000,'SITE','Deployment'),
+  // Commercial
+  X('Outbound freight — cleanroom-grade crated shipment','LUMPSUM',320000,'COMMERCIAL','Logistics'),
+  X('Transit insurance','PERCENT_OF_BASE',null,'COMMERCIAL','Logistics',null,null,0.35,'DIRECT_COST'),
+  X('Third-party SEMI S2/S8 certification and safety audit','LUMPSUM',450000,'COMMERCIAL','Certification'),
+  X('Bank charges, LC handling and documentation','PERCENT_OF_BASE',null,'COMMERCIAL','Finance',null,null,0.4,'DIRECT_COST'),
+  // AMC
+  A(1,385000,7,32,165000,4),A(2,385000,7,32,165000,4),A(3,385000,7,32,165000,4),
+  A(4,385000,7,32,165000,4),A(5,385000,7,32,165000,4),
+];
+
+const BATTERY_LINES=[
+  ...[['Station 1 — Cell in-feed, sorting and IR/OCV grading',4850000],
+      ['Station 2 — Cell stacking and holder insertion',3920000],
+      ['Station 3 — Laser welding cell (fibre laser, fume extraction, vision)',12600000],
+      ['Station 4 — Busbar placement and torque station',2780000],
+      ['Station 5 — ICT / hipot and insulation test',5450000],
+      ['Station 6 — End-of-line functional test and data logging',6200000],
+      ['Conveyor, transfer and pallet system',3650000],
+      ['Line control panel, safety PLC and MES gateway',2950000]].map(([d,c])=>MF(d,null,1,c,'SET','Stations')),
+  M('Fibre laser source 1.5 kW with scanner head (imported)',null,1,82000,'NOS','Laser','MATERIAL',
+    {imported:true,freight:4,insurance:0.5,duty:7.5,landing:1.2}),
+  P('Line assembly and station integration','ASSEMBLY',1,3200,1,'Build'),
+  P('Line commissioning, cycle-time proving and OEE trials','TESTING',1,1400,1,'Build'),
+  P('Station-wise quality validation and MSA','INSPECTION',1,480,1,'Build'),
+  P('Line dismantling, packing and crating','PACKING',1,320,1,'Build'),
+  E('Line layout, station design and material flow','MECHANICAL_DESIGN','Senior Engineer',1350,320,'DESIGN','Engineering'),
+  E('Line electrical design and panel engineering','ELECTRICAL_DESIGN','Senior Engineer',1300,180,'DESIGN','Engineering'),
+  E('Safety architecture (PLd) and line control design','CONTROLS','Senior Engineer',1450,210,'DESIGN','Engineering'),
+  E('Line PLC, SCADA and MES integration','SOFTWARE','Senior Engineer',1550,420,'SOFTWARE','Engineering'),
+  E('Weld inspection vision and traceability','VISION','Senior Engineer',1650,160,'SOFTWARE','Engineering'),
+  E('Programme management and customer interface','PROJECT_MANAGEMENT','Project Manager',1500,260,'DESIGN','Engineering'),
+  E('Manuals, validation protocols and IQ/OQ documentation','DOCUMENTATION','Technical Writer',680,140,'DESIGN','Engineering'),
+  X('Installation and commissioning at Krishnagiri','PER_DAY',9500,'SITE','Deployment',45,3),
+  X('Travel, accommodation and per diem','PER_DAY',4200,'SITE','Deployment',45,3),
+  X('Crane, rigging and site handling','LUMPSUM',480000,'SITE','Deployment'),
+  X('Outbound freight — multi-truck line shipment','LUMPSUM',890000,'COMMERCIAL','Logistics'),
+  X('Insurance and transit cover','PERCENT_OF_BASE',null,'COMMERCIAL','Logistics',null,null,0.3,'DIRECT_COST'),
+  A(1,1450000,8,35,620000,12),A(2,1450000,8,35,620000,12),A(3,1450000,8,35,620000,12),
+];
+
+const FIXTURE_LINES=[
+  // Heavier wastage and a better scrap credit than the machine BOM — a fixture base plate
+  // is machined away from solid, so more of it becomes recoverable swarf.
+  M('Aluminium 6061-T6 plate 40 mm — base plate','AL-6061-T6-PLATE',264,385,'KG','Base','MATERIAL',{wastage:18,scrap:12}),
+  M('Hardened locating pins and bushes (EN31, 60 HRC)',null,12,4850,'SET','Locators'),
+  M('Toggle clamps, rest pads and standard hardware','ALU-EXT-4040',12,6200,'SET','Clamping'),
+  M('Digital dial indicators with certificates',null,48,8900,'NOS','Gauging'),
+  ...[['CNC_MILLING',320],['SURFACE_GRINDING',90],['WIRE_EDM',65],['HEAT_TREATMENT',180],['ANODIZING',45],
+      ['LASER_MARKING',8],['ASSEMBLY',240],['CMM_MEASUREMENT',75],['INSPECTION',45],['PACKING',25]]
+      .map(([c,cy])=>P(`${PROC[c].name} — fixture components`,c,12,cy,12,'Machining')),
+  E('Fixture design, datum scheme and CMM correlation study','MECHANICAL_DESIGN','Senior Engineer',1350,96,'DESIGN','Engineering',true,12),
+  E('Manufacturing drawings and inspection reports','DOCUMENTATION','Technical Writer',680,40,'DESIGN','Engineering'),
+  X('Freight to Pune plant','LUMPSUM',46000,'COMMERCIAL','Logistics'),
+];
+
+const ESTIMATES=[
+  {id:'e1',code:'SEMI-26-0001-EST-001',title:'EFEM Wafer Handling Robot — Baseline Estimate',rev:0,status:'DRAFT',
+   bu:'SEMI',buName:'Semiconductor Equipment',project:'EFEM Wafer Handling Robot — 300 mm',projectCode:'SEMI-26-0001',
+   customer:'Micron Semiconductor India',machine:'TEAL-EFEM-300 Dual Arm',plant:'Hosur Plant',risk:'HIGH',
+   owner:'Sanjay Kulkarni',by:'Priya Raman',quantity:2,currency:'INR',
+   overhead:{sgaPct:7,adminPct:3.5,warrantyPct:2,riskPct:3,contingencyPct:3,financePct:1.8},
+   pricing:{mode:'MARGIN_ON_SALES',targetMarginPct:26},priceRoundingStep:10000,lines:WAFER_LINES},
+  {id:'e2',code:'BATT-26-0001-EST-001',title:'Battery Module Assembly Line — Budgetary Estimate',rev:0,status:'IN_REVIEW',
+   bu:'BATT',buName:'Battery Equipment',project:'Battery Module Assembly Line — 21700',projectCode:'BATT-26-0001',
+   customer:'Ola Electric',machine:'TEAL-BMA-21700 Line',plant:'Bengaluru Technology Centre',risk:'MEDIUM',
+   owner:'Sanjay Kulkarni',by:'Priya Raman',quantity:1,currency:'INR',
+   overhead:{sgaPct:6,adminPct:3,warrantyPct:1.5,riskPct:2,contingencyPct:2.5,financePct:1.5},
+   pricing:{mode:'MARGIN_ON_SALES',targetMarginPct:22},priceRoundingStep:50000,lines:BATTERY_LINES},
+  {id:'e3',code:'PREC-26-0001-EST-001',title:'Cylinder Head Checking Fixture — Batch of 12',rev:0,status:'APPROVED',
+   bu:'PREC',buName:'Precision Manufacturing',project:'Cylinder Head Checking Fixture',projectCode:'PREC-26-0001',
+   customer:'Tata Motors',machine:'CHK-FIX-CH-4V',plant:'Pune Manufacturing',risk:'LOW',
+   owner:'Priya Raman',by:'Priya Raman',quantity:12,currency:'INR',
+   overhead:{sgaPct:5,adminPct:2.5,warrantyPct:1,riskPct:1.5,contingencyPct:1.5,financePct:1.2},
+   pricing:{mode:'MARGIN_ON_SALES',targetMarginPct:18},priceRoundingStep:0,lines:FIXTURE_LINES},
+];
+/* Compute once — the engine is deterministic, so results are stable for the session. */
+ESTIMATES.forEach(e=>{ e.result=calculateEstimate({id:e.id,currency:e.currency,quantity:e.quantity,
+  lines:e.lines,overhead:e.overhead,pricing:e.pricing,priceRoundingStep:e.priceRoundingStep}) });
+
+const APPROVAL_STEPS=[
+  {seq:1,name:'Engineering Review',role:'Engineering Manager',who:'Vikram Desai',status:'APPROVED',sig:'d4d50e754623c835f980'},
+  {seq:2,name:'Costing Sign-Off',role:'Costing Manager',who:'Suresh Nair',status:'APPROVED',sig:'5cd6b5a63feeeb42009a'},
+  {seq:3,name:'Finance Review',role:'Finance',who:'Lakshmi Venkat',status:'PENDING',sig:null},
+  {seq:4,name:'BU Head Approval',role:'BU Head',who:null,status:'PENDING',sig:null},
+  {seq:5,name:'Business Head Release',role:'Business Head',who:null,status:'PENDING',sig:null},
+];
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   4. STATE + HELPERS
+   ═══════════════════════════════════════════════════════════════════════════════════════ */
+const S={user:null,page:'dashboard',estimate:null,tab:'summary'};
+
+const inr=n=>'₹'+Math.round(Number(n)||0).toLocaleString('en-IN');
+function compact(n){ n=Number(n)||0; const a=Math.abs(n), s=n<0?'-':'';
+  if(a>=1e7) return `${s}₹${(a/1e7).toFixed(2)} Cr`;
+  if(a>=1e5) return `${s}₹${(a/1e5).toFixed(2)} L`;
+  if(a>=1e3) return `${s}₹${(a/1e3).toFixed(1)} K`;
+  return `${s}₹${a.toFixed(0)}` }
+const pctS=(n,d=1)=>(Number(n)||0).toFixed(d)+'%';
+const numS=(n,d=1)=>(Number(n)||0).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d});
+const initials=(a,b)=>((a||'')[0]||'')+((b||'')[0]||'');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const STATUS_TONE={DRAFT:'b-n',IN_REVIEW:'b-a',PENDING_APPROVAL:'b-w',APPROVED:'b-g',RELEASED:'b-g',
+  REJECTED:'b-d',PENDING:'b-w',HIGH:'b-w',MEDIUM:'b-n',LOW:'b-g',CRITICAL:'b-d'};
+const tone=s=>STATUS_TONE[s]||'b-n';
+const title=s=>String(s||'').split('_').map(w=>w[0]+w.slice(1).toLowerCase()).join(' ');
+
+/** Record-level scoping — the same rule ScopeService applies server-side. */
+function visibleEstimates(){
+  if(!S.user) return [];
+  const r=ROLES[S.user.role];
+  if(r.scope==='GLOBAL') return ESTIMATES;
+  return ESTIMATES.filter(e=>e.bu===r.bu);
+}
+
+const SERIES=['#00A9B4','#F07C1A','#1E4E75','#8FE0E6','#D6650C','#6E93B4','#0E9F6E','#77787B'];
+
+/* ── Brand marks (same geometry as brand/teal-logo.svg) ────────────────────────────── */
+function logoFull(h,onDark){
+  const grey=onDark?'#fff':'#77787B';
+  return `<svg viewBox="0 0 1000 470" style="height:${h}px;width:auto" role="img" aria-label="TEAL — A TATA Enterprise">
+    <g transform="translate(40,20) skewX(-9)">
+      <path fill="${grey}" d="M0,20 H250 L152,300 H84 L182,80 H0 Z"/>
+      <g transform="translate(268,0)"><path fill="#00A9B4" d="M0,20 H208 L189,80 H60 V132 H186 L167,192 H60 V240 H196 L177,300 H0 Z"/></g>
+      <g transform="translate(506,0)"><path fill="#00A9B4" fill-rule="evenodd" d="M46,20 H214 L160,300 H98 L112,222 H60 L20,300 H-46 Z M124,162 L145,80 H92 L48,162 Z"/></g>
+      <g transform="translate(716,0)"><path fill="${grey}" d="M0,20 H68 L28,240 H196 L185,300 H-42 Z"/></g>
+    </g>
+    <g transform="translate(40,432)" fill="#00A9B4" font-family="Inter,Arial,sans-serif">
+      <text x="0" y="0" font-size="66">A</text><text x="52" y="0" font-size="66" font-weight="800">TATA</text>
+      <text x="232" y="0" font-size="66">Enterprise</text></g></svg>`;
+}
+function logoMark(s){
+  return `<svg viewBox="0 0 128 128" style="height:${s}px;width:${s}px" role="img" aria-label="TEAL">
+    <rect width="128" height="128" rx="30" fill="#0E3A5C"/>
+    <g transform="translate(26,22) skewX(-9) scale(0.26)"><path fill="#00A9B4" d="M0,20 H250 L152,300 H84 L182,80 H0 Z"/></g>
+    <g transform="translate(58,22) skewX(-9) scale(0.26)"><path fill="#fff" fill-opacity=".92" d="M0,20 H208 L189,80 H60 V132 H186 L167,192 H60 V240 H196 L177,300 H0 Z"/></g></svg>`;
+}
+
+/* ── Hand-drawn SVG charts (no chart library) ──────────────────────────────────────── */
+function donut(data,centre,sub){
+  const total=data.reduce((s,d)=>s+d.value,0)||1; const R=70,r=44,C=90; let a=-Math.PI/2, segs='';
+  data.forEach((d,i)=>{ const frac=d.value/total, end=a+frac*Math.PI*2;
+    const gap=frac>0.02?0.018:0; const s=a+gap, e=end-gap;
+    const x1=C+R*Math.cos(s),y1=C+R*Math.sin(s),x2=C+R*Math.cos(e),y2=C+R*Math.sin(e);
+    const x3=C+r*Math.cos(e),y3=C+r*Math.sin(e),x4=C+r*Math.cos(s),y4=C+r*Math.sin(s);
+    const big=frac>0.5?1:0;
+    segs+=`<path d="M${x1} ${y1} A${R} ${R} 0 ${big} 1 ${x2} ${y2} L${x3} ${y3} A${r} ${r} 0 ${big} 0 ${x4} ${y4} Z"
+            fill="${SERIES[i%SERIES.length]}"><title>${esc(d.name)}: ${compact(d.value)}</title></path>`;
+    a=end; });
+  return `<svg viewBox="0 0 180 180" style="width:100%;max-width:210px;height:auto;display:block;margin:0 auto">${segs}
+    <text x="90" y="86" text-anchor="middle" font-size="17" font-weight="700" fill="currentColor">${centre}</text>
+    <text x="90" y="102" text-anchor="middle" font-size="8" fill="var(--subtle)" letter-spacing="1">${esc(sub||'')}</text></svg>`;
+}
+function bars(data,fmt){
+  const max=Math.max(...data.map(d=>d.value),1);
+  return data.map((d,i)=>`<div style="margin-bottom:11px">
+    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+      <span style="color:var(--muted)">${esc(d.name)}</span>
+      <b class="tab">${fmt?fmt(d.value):compact(d.value)}</b></div>
+    <div class="meter"><i style="width:${(d.value/max*100).toFixed(1)}%;background:${SERIES[i%SERIES.length]}"></i></div>
+  </div>`).join('');
+}
+/** Waterfall: cost → price, built with a transparent riser per step. */
+function waterfall(steps){
+  const W=560,H=190,pad=26; let run=0; const tops=[];
+  steps.forEach(s=>{ tops.push({label:s.label,base:run,value:s.value}); run+=s.value });
+  const max=Math.max(run,...tops.map(t=>t.base+Math.abs(t.value)))||1;
+  const bw=(W-pad*2)/steps.length-9;
+  const y=v=>H-pad-(v/max)*(H-pad*2);
+  const bodies=tops.map((t,i)=>{ const x=pad+i*((W-pad*2)/steps.length)+4;
+    const top=y(t.base+Math.max(t.value,0)), bot=y(t.base+Math.min(t.value,0));
+    const h=Math.max(Math.abs(bot-top),1.5);
+    const fill=i===tops.length-1?SERIES[1]:(t.value<0?'#BE1818':SERIES[0]);
+    return `<rect x="${x}" y="${top}" width="${bw}" height="${h}" rx="3" fill="${fill}">
+      <title>${esc(t.label)}: ${compact(t.value)}</title></rect>
+      <text x="${x+bw/2}" y="${H-9}" text-anchor="middle" font-size="8" fill="var(--muted)">${esc(t.label)}</text>`}).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+    <line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="var(--border)"/>${bodies}</svg>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   5. VIEWS
+   ═══════════════════════════════════════════════════════════════════════════════════════ */
+const NAV=[
+  {sec:'Overview',items:[
+    {id:'dashboard',label:'Dashboard',ic:'▦',perm:['dashboard.executive.view','dashboard.bu.view','dashboard.department.view']},
+  ]},
+  {sec:'Costing',items:[
+    {id:'estimates',label:'Estimates',ic:'▤',perm:['estimate.estimate.view']},
+    {id:'approvals',label:'Approvals',ic:'✓',perm:['workflow.approval.view'],badge:()=>pendingForMe()},
+  ]},
+  {sec:'Reference Data',items:[
+    {id:'rates',label:'Machine Rates',ic:'◷',perm:['master.rate.view','master.master.view']},
+  ]},
+  {sec:'Governance',items:[
+    {id:'access',label:'Access Model',ic:'◈',perm:['dashboard.department.view']},
+  ]},
+];
+const PAGE_META={
+  dashboard:['Executive Dashboard','Pipeline, cost and margin across your scope'],
+  estimates:['Estimates','Cost documents you are entitled to see'],
+  estimate:['Estimate Workspace','Build, review and price the cost document'],
+  approvals:['Approvals','Your approval inbox'],
+  rates:['Machine Hour Rates','Process rate master with the full build-up'],
+  access:['Access Model','What your role can see, and why'],
+};
+function pendingForMe(){ return can('workflow.approval.approve')?1:0 }
+
+function renderNav(){
+  document.getElementById('nav').innerHTML=NAV.map(sec=>{
+    const items=sec.items.filter(i=>i.perm.some(p=>can(p)));
+    if(!items.length) return '';
+    return `<h6>${sec.sec}</h6>`+items.map(i=>{
+      const b=i.badge?i.badge():0;
+      return `<button class="nav-i ${S.page===i.id||(i.id==='estimates'&&S.page==='estimate')?'on':''}" onclick="go('${i.id}')">
+        <span class="ic">${i.ic}</span>${i.label}${b?`<span class="pill">${b}</span>`:''}</button>`}).join('');
+  }).join('');
+}
+
+/* ── Dashboard ─────────────────────────────────────────────────────────────────────── */
+function viewDashboard(){
+  const est=visibleEstimates();
+  const showMargin=can('estimate.margin.view'), showPrice=can('estimate.pricing.view');
+  const totalCost=est.reduce((s,e)=>s+e.result.totalCost,0);
+  const totalPrice=est.reduce((s,e)=>s+e.result.sellingPrice,0);
+  const totalMargin=est.reduce((s,e)=>s+e.result.grossMargin,0);
+  const amcRev=est.reduce((s,e)=>s+e.result.amc.totalRevenue,0);
+  const avgMargin=totalPrice>0?(totalMargin/totalPrice*100):0;
+
+  const comp=new Map();
+  est.forEach(e=>e.result.categories.forEach(c=>{ if(c.cost>0&&c.category!=='AMC')
+    comp.set(c.category,(comp.get(c.category)||0)+c.cost) }));
+  const compData=[...comp.entries()].sort((a,b)=>b[1]-a[1]).slice(0,7)
+    .map(([k,v])=>({name:CAT_LABEL[k],value:v}));
+  const compTotal=compData.reduce((s,d)=>s+d.value,0);
+
+  const buData=[...new Set(est.map(e=>e.buName))].map(name=>({name,
+    value:est.filter(e=>e.buName===name).reduce((s,e)=>s+e.result.sellingPrice,0)}))
+    .sort((a,b)=>b.value-a.value);
+
+  const hour=new Date().getHours();
+  const greet=hour<12?'morning':hour<17?'afternoon':'evening';
+
+  return `
+  <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:14px;margin-bottom:18px">
+    <div>
+      <p style="font-size:12px;color:var(--muted)">${new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p>
+      <h2 style="font-size:23px;letter-spacing:-.02em;margin-top:3px">Good ${greet}, ${esc(S.user.first)}</h2>
+    </div>
+    ${can('workflow.approval.approve')?`<button class="btn btn-a" onclick="go('approvals')">1 awaiting you</button>`:''}
+  </div>
+
+  <div class="grid g4" style="margin-bottom:15px">
+    <div class="kpi" style="--k:#00A9B4">
+      <div class="lbl">Quoted pipeline</div>
+      <div class="val tab">${showPrice?compact(totalPrice):'<span class="locked">••••</span>'}</div>
+      <div class="sub">${est.length} live estimate${est.length===1?'':'s'} in your scope</div></div>
+    <div class="kpi" style="--k:#1E4E75">
+      <div class="lbl">Estimated cost</div>
+      <div class="val tab">${compact(totalCost)}</div>
+      <div class="sub">Including overheads and commercial charges</div></div>
+    <div class="kpi" style="--k:#F07C1A">
+      <div class="lbl">Gross margin</div>
+      <div class="val tab">${showMargin?compact(totalMargin):'<span class="locked">••••</span>'}</div>
+      <div class="sub">${showMargin?pctS(avgMargin)+' across the portfolio':'Restricted for your role'}</div></div>
+    <div class="kpi" style="--k:#8FE0E6">
+      <div class="lbl">AMC revenue</div>
+      <div class="val tab">${showPrice?compact(amcRev):'<span class="locked">••••</span>'}</div>
+      <div class="sub">Multi-year, across the installed base</div></div>
+  </div>
+
+  <div class="grid g2" style="margin-bottom:15px">
+    <div class="card">
+      <div class="card-h"><div><h3>Quoted value by business unit</h3><p>Only units within your access scope</p></div></div>
+      <div class="card-b">${buData.length&&showPrice?bars(buData):'<div class="empty">Restricted for your role</div>'}</div>
+    </div>
+    <div class="card">
+      <div class="card-h"><div><h3>Cost composition</h3><p>Where the money goes</p></div></div>
+      <div class="card-b">
+        ${donut(compData,compact(compTotal),'DIRECT COST')}
+        <div style="margin-top:14px">${compData.map((d,i)=>`<div class="legend">
+          <span style="display:flex;gap:8px;align-items:center;min-width:0">
+            <span class="sw" style="background:${SERIES[i%SERIES.length]}"></span>
+            <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.name)}</span></span>
+          <span style="display:flex;gap:10px"><b class="tab">${compact(d.value)}</b>
+          <span class="tab" style="color:var(--subtle);width:42px;text-align:right">${pctS(d.value/compTotal*100,0)}</span></span>
+        </div>`).join('')}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><div><h3>Estimates</h3><p>Scoped to what your role may see</p></div>
+      <button class="btn btn-o btn-sm" onclick="go('estimates')">View all</button></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Estimate</th><th>Customer</th><th>BU</th><th class="num">Total cost</th>
+        <th class="num">Price</th>${showMargin?'<th class="num">Margin</th>':''}<th>Status</th></tr></thead>
+      <tbody>${est.map(e=>{const m=mask({...e.result});return `<tr style="cursor:pointer" onclick="openEstimate('${e.id}')">
+        <td><b>${esc(e.title)}</b><div class="mono" style="color:var(--muted);margin-top:2px">${e.code}</div></td>
+        <td>${esc(e.customer)}</td><td style="color:var(--muted)">${e.bu}</td>
+        <td class="num"><b>${compact(m.totalCost)}</b></td>
+        <td class="num">${m.sellingPrice==null?SHOW(null):compact(m.sellingPrice)}</td>
+        ${showMargin?`<td class="num">${m.marginPct==null?SHOW(null):
+          `<b style="color:${m.marginPct<8?'var(--danger)':'inherit'}">${pctS(m.marginPct)}</b>`}</td>`:''}
+        <td><span class="badge ${tone(e.status)}">${title(e.status)}</span></td></tr>`}).join('')}
+      </tbody></table></div>
+  </div>`;
+}
+
+/* ── Estimates list ────────────────────────────────────────────────────────────────── */
+function viewEstimates(){
+  const est=visibleEstimates(), showMargin=can('estimate.margin.view');
+  const all=ESTIMATES.length;
+  return `
+  ${est.length<all?`<div class="alert a-i" style="margin-bottom:14px"><span>◈</span><span>
+    <b>Record-level scoping is active.</b> You can see ${est.length} of ${all} estimates —
+    your role is scoped to ${esc(ROLES[S.user.role].bu||'your business unit')}. This filtering happens
+    server-side in the full platform; there is no client-side way to widen it.</span></div>`:''}
+  <div class="card">
+    <div class="card-h"><div><h3>${est.length} estimate${est.length===1?'':'s'}</h3>
+      <p>Commercially sensitive columns are masked per role</p></div></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Estimate</th><th>Project / Customer</th><th class="num">Lines</th><th class="num">Qty</th>
+        <th class="num">Total cost</th><th class="num">Price</th>${showMargin?'<th class="num">Margin</th>':''}
+        <th>Status</th></tr></thead>
+      <tbody>${est.map(e=>{const m=mask({...e.result});return `<tr style="cursor:pointer" onclick="openEstimate('${e.id}')">
+        <td><b>${esc(e.title)}</b><div class="mono" style="color:var(--muted);margin-top:2px">${e.code} · Rev ${e.rev}</div></td>
+        <td>${esc(e.project)}<div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(e.customer)}</div></td>
+        <td class="num" style="color:var(--muted)">${e.lines.length}</td>
+        <td class="num">${e.quantity}</td>
+        <td class="num"><b>${compact(m.totalCost)}</b></td>
+        <td class="num">${m.sellingPrice==null?SHOW(null):compact(m.sellingPrice)}</td>
+        ${showMargin?`<td class="num">${m.marginPct==null?SHOW(null):pctS(m.marginPct)}</td>`:''}
+        <td><span class="badge ${tone(e.status)}">${title(e.status)}</span></td></tr>`}).join('')}
+      </tbody></table></div>
+  </div>`;
+}
+
+/* ── Estimate workspace ────────────────────────────────────────────────────────────── */
+function viewEstimate(){
+  const e=ESTIMATES.find(x=>x.id===S.estimate); if(!e) return '<div class="empty">Not found</div>';
+  const r=e.result, m=mask({...r});
+  const showMargin=can('estimate.margin.view'), showPrice=can('estimate.pricing.view');
+  const sections=r.categories.filter(c=>c.lineCount>0);
+  const locked=['APPROVED','RELEASED','IN_REVIEW','PENDING_APPROVAL'].includes(e.status);
+
+  const tabs=[{id:'summary',label:'Summary'},...sections.map(c=>({id:c.category,label:CAT_LABEL[c.category],n:c.lineCount}))];
+
+  let body='';
+  if(S.tab==='summary'){
+    const compData=sections.filter(c=>c.category!=='AMC'&&c.cost>0).map(c=>({name:CAT_LABEL[c.category],value:c.cost}));
+    body=`<div class="grid g2">
+      <div style="display:flex;flex-direction:column;gap:15px">
+        ${showMargin&&m.sellingPrice!=null?`<div class="card">
+          <div class="card-h"><div><h3>Cost to price</h3><p>How direct cost becomes the quoted figure</p></div></div>
+          <div class="card-b" style="color:var(--muted)">${waterfall([
+            {label:'Material',value:r.categories.find(c=>c.category==='MATERIAL').cost},
+            {label:'Conversion',value:r.conversionCost},
+            {label:'Overheads',value:r.overheads.total},
+            {label:'Commercial',value:r.commercialCost},
+            {label:'Margin',value:r.grossMargin}])}</div></div>`:''}
+        <div class="card">
+          <div class="card-h"><div><h3>Cost by section</h3><p>Every section carrying cost</p></div></div>
+          <div class="scroll"><table>
+            <thead><tr><th>Section</th><th class="num">Lines</th><th class="num">Hours</th>
+              <th class="num">Cost</th><th class="num">Per unit</th><th class="num">Share</th></tr></thead>
+            <tbody>${sections.map(c=>`<tr style="cursor:pointer" onclick="setTab('${c.category}')">
+              <td><b>${CAT_LABEL[c.category]}</b></td>
+              <td class="num" style="color:var(--muted)">${c.lineCount}</td>
+              <td class="num" style="color:var(--muted)">${c.hours>0?numS(c.hours):'—'}</td>
+              <td class="num"><b>${compact(c.cost)}</b></td>
+              <td class="num" style="color:var(--muted)">${compact(c.costPerUnit)}</td>
+              <td class="num" style="color:var(--muted)">${c.sharePct>0?pctS(c.sharePct):'—'}</td></tr>`).join('')}
+            </tbody></table></div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:15px">
+        ${rollupPanel(e,r,m,showMargin)}
+        <div class="card"><div class="card-h"><div><h3>Composition</h3></div></div>
+          <div class="card-b">${donut(compData,compact(r.directCost),'DIRECT COST')}</div></div>
+        <div class="card"><div class="card-h"><div><h3>Details</h3></div></div>
+          <div class="card-b" style="display:grid;grid-template-columns:1fr 1fr;gap:13px;font-size:12.5px">
+            ${[['Customer',e.customer],['Machine',e.machine],['Plant',e.plant],
+               ['Risk rating',`<span class="badge ${tone(e.risk)}">${e.risk}</span>`],
+               ['Owner',e.owner],['Prepared by',e.by],['Engine',r.engineVersion],['Quantity',e.quantity]]
+              .map(([k,v])=>`<div><div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:600">${k}</div>
+                <div style="margin-top:3px;font-weight:500">${v}</div></div>`).join('')}
+          </div></div>
+      </div></div>`;
+  } else {
+    body=sectionGrid(e,r,S.tab);
+  }
+
+  return `
+  <div class="card" style="overflow:hidden;margin-bottom:15px">
+    <div class="hero">
+      <button onclick="go('estimates')" style="font-size:12px;color:#A6C0D8">← ${e.projectCode} · ${esc(e.project)}</button>
+      <h2 style="margin-top:5px">${esc(e.title)}</h2>
+      <div class="meta"><span class="mono">${e.code}</span><span>·</span><span>Revision ${e.rev}</span>
+        <span>·</span><span>Qty ${e.quantity}</span><span>·</span><span>${e.currency}</span>
+        <span>·</span><span>${esc(e.buName)}</span>
+        <span class="badge ${tone(e.status)}" style="margin-left:4px">${title(e.status)}</span>
+        ${locked?'<span class="badge b-n">🔒 Locked</span>':''}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+      ${[['Direct cost',compact(r.directCost),''],
+         ['Total cost',compact(r.totalCost),compact(r.totalCostPerUnit)+' per unit'],
+         ['Selling price',m.sellingPrice==null?'••••':compact(m.sellingPrice),m.sellingPrice==null?'Restricted':''],
+         ['Gross margin',m.grossMargin==null?'••••':compact(m.grossMargin),m.marginPct==null?'Restricted':pctS(m.marginPct)],
+         ['Hours',numS(r.totalMachineHours+r.totalEffortHours,0),`${numS(r.totalMachineHours,0)} machine · ${numS(r.totalEffortHours,0)} effort`]]
+        .map(([l,v,s])=>`<div class="hdr-fig"><div class="l">${l}</div>
+          <div class="v" ${v==='••••'?'style="color:var(--subtle);letter-spacing:.1em"':''}>${v}</div>
+          ${s?`<div class="s">${s}</div>`:''}</div>`).join('')}
+    </div>
+  </div>
+
+  ${r.warnings.length?`<div class="alert a-w" style="margin-bottom:15px"><span>⚠</span><div>
+    <b>${r.warnings.length} item${r.warnings.length===1?'':'s'} to review before submitting</b>
+    <ul style="margin:6px 0 0 16px;line-height:1.65">${r.warnings.slice(0,5).map(w=>`<li>${esc(w)}</li>`).join('')}</ul>
+    </div></div>`:''}
+
+  <div class="tabs">${tabs.map(t=>`<button class="tab-b ${S.tab===t.id?'on':''}" onclick="setTab('${t.id}')">
+    ${t.label}${t.n?`<span class="badge b-n">${t.n}</span>`:''}</button>`).join('')}</div>
+  ${body}`;
+}
+
+function rollupPanel(e,r,m,showMargin){
+  const oh=[['SG&A recovery',e.overhead.sgaPct,r.overheads.sga],['Administration',e.overhead.adminPct,r.overheads.admin],
+    ['Warranty provision',e.overhead.warrantyPct,r.overheads.warranty],['Risk provision',e.overhead.riskPct,r.overheads.risk],
+    ['Contingency',e.overhead.contingencyPct,r.overheads.contingency],['Finance cost',e.overhead.financePct,r.overheads.finance]]
+    .filter(([,p])=>p>0);
+  const below=m.marginPct!=null&&m.marginPct<8;
+  return `<div class="card">
+    <div class="card-h"><div><h3>Cost roll-up</h3><p>${e.quantity} unit${e.quantity===1?'':'s'} · ${e.currency}</p></div></div>
+    <div class="card-b">
+      <div class="rollup em"><span class="k">Direct cost</span><span class="v">${inr(r.directCost)}</span></div>
+      <div class="rollup"><span class="k" style="padding-left:12px">of which conversion</span>
+        <span class="v" style="color:var(--muted)">${inr(r.conversionCost)}</span></div>
+      <div class="rule"></div>
+      ${oh.map(([l,p,v])=>`<div class="rollup"><span class="k">${l} <span style="color:var(--subtle)">(${pctS(p)})</span></span>
+        <span class="v" style="color:var(--muted)">${inr(v)}</span></div>`).join('')}
+      <div class="rollup"><span class="k">Total overheads</span><span class="v">${inr(r.overheads.total)}</span></div>
+      <div class="rule"></div>
+      <div class="rollup em"><span class="k">Factory cost</span><span class="v">${inr(r.factoryCost)}</span></div>
+      <div class="rollup"><span class="k">Commercial charges</span><span class="v" style="color:var(--muted)">${inr(r.commercialCost)}</span></div>
+      <div class="rule s"></div>
+      <div class="rollup em big"><span class="k">Total cost</span><span class="v">${inr(r.totalCost)}</span></div>
+      <div class="rollup"><span class="k" style="padding-left:12px">Cost per unit</span>
+        <span class="v" style="color:var(--muted)">${inr(r.totalCostPerUnit)}</span></div>
+      ${showMargin&&m.sellingPrice!=null?`
+        <div class="rule s"></div>
+        <div class="rollup em big"><span class="k">Selling price</span><span class="v">${inr(m.sellingPrice)}</span></div>
+        <div class="rollup em"><span class="k">Gross margin</span>
+          <span class="v" style="color:${below?'var(--danger)':'var(--ok)'}">${inr(m.grossMargin)}</span></div>
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:var(--muted)">Margin</span>
+            <b class="tab" style="color:${below?'var(--danger)':'inherit'}">${pctS(m.marginPct)}</b></div>
+          <div class="meter"><i style="width:${Math.min(Math.max(m.marginPct,0)/40*100,100)}%;
+            background:${below?'var(--danger)':'var(--ok)'}"></i></div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--subtle);margin-top:4px">
+            <span>0%</span><span ${below?'style="color:var(--danger);font-weight:700"':''}>8% floor</span><span>40%</span></div>
+        </div>
+        <div class="rollup" style="margin-top:10px"><span class="k">Indicative EBITDA</span>
+          <span class="v" style="color:var(--muted)">${inr(m.ebitda)}</span></div>`
+      :`<div class="alert a-i" style="margin-top:14px;font-size:12px"><span>🔒</span><span>
+          Price and margin are restricted for your role. The cost figures above are complete —
+          field-level masking removes the value before it leaves the server, it is not merely hidden.</span></div>`}
+      ${r.amc.totalRevenue>0?`<div class="rule"></div>
+        <div style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle);font-weight:600;margin:6px 0 4px">Annual maintenance</div>
+        <div class="rollup"><span class="k">AMC revenue (${r.amc.years.length} yr)</span>
+          <span class="v" style="color:var(--muted)">${can('estimate.pricing.view')?inr(r.amc.totalRevenue):'••••'}</span></div>
+        ${showMargin?`<div class="rollup"><span class="k">AMC margin</span>
+          <span class="v" style="color:var(--muted)">${inr(r.amc.totalMargin)}</span></div>`:''}`:''}
+    </div></div>`;
+}
+
+/** One grid, five presentations — columns adapt to whichever line kind dominates. */
+function sectionGrid(e,r,cat){
+  const rows=r.lines.filter(l=>l.category===cat);
+  if(!rows.length) return '<div class="card"><div class="empty">No lines in this section</div></div>';
+  const c=r.categories.find(x=>x.category===cat);
+  const counts={}; rows.forEach(l=>counts[l.kind]=(counts[l.kind]||0)+1);
+  const kind=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+
+  const groups=new Map();
+  rows.forEach(l=>{ const g=l.groupPath||'Ungrouped'; if(!groups.has(g)) groups.set(g,[]); groups.get(g).push(l) });
+
+  let head,cells;
+  if(kind==='PROCESS'){
+    head=`<th>Description</th><th>Process</th><th class="num">Rate/hr</th><th class="num">Hours</th><th class="num">Cost</th>`;
+    cells=l=>`<td>${esc(l.description)}</td>
+      <td style="color:var(--muted)">${title(l.breakdown.processCode||'')||'—'}</td>
+      <td class="num">${inr(l.breakdown.ratePerHour)}</td>
+      <td class="num">${numS(l.hours,2)}</td><td class="num"><b>${inr(l.cost)}</b></td>`;
+  } else if(kind==='EFFORT'){
+    head=`<th>Description</th><th>Rate/hr</th><th class="num">Hours</th><th class="num">Cost</th>`;
+    cells=l=>`<td>${esc(l.description)}${l.breakdown.foak?' <span class="badge b-o">FOAK</span>':''}${l.breakdown.amortised?' <span class="badge b-a">NRE ÷'+l.breakdown.amortizationQty+'</span>':''}</td>
+      <td class="num">${inr(l.breakdown.ratePerHour)}</td>
+      <td class="num">${numS(l.breakdown.hours,0)}</td><td class="num"><b>${inr(l.cost)}</b></td>`;
+  } else if(kind==='EXPENSE'){
+    head=`<th>Description</th><th>Basis</th><th class="num">Cost</th>`;
+    cells=l=>`<td>${esc(l.description)}</td>
+      <td><span class="badge b-n">${title(Object.keys(l.breakdown).includes('percent')?'PERCENT_OF_BASE':
+        Object.keys(l.breakdown).includes('days')?'PER_DAY':'LUMPSUM')}</span></td>
+      <td class="num"><b>${inr(l.cost)}</b></td>`;
+  } else if(kind==='AMC'){
+    head=`<th>Description</th><th class="num">Year</th><th class="num">Cost</th><th class="num">Revenue</th>`;
+    cells=l=>`<td>${esc(l.description)}</td><td class="num">${l.breakdown.year}</td>
+      <td class="num">${inr(l.cost)}</td>
+      <td class="num"><b>${can('estimate.pricing.view')?inr(l.breakdown.revenue):'••••'}</b></td>`;
+  } else {
+    head=`<th>Description</th><th class="num">Qty</th><th class="num">Unit rate</th><th class="num">Cost</th>`;
+    cells=l=>`<td>${esc(l.description)}</td>
+      <td class="num">${numS(l.breakdown.quantity,l.breakdown.quantity%1?2:0)}</td>
+      <td class="num">${inr(l.breakdown.unitRate)}${l.breakdown.fxRate!==1?
+        ` <span style="font-size:10px;color:var(--subtle)">×${l.breakdown.fxRate}</span>`:''}</td>
+      <td class="num"><b>${inr(l.cost)}</b></td>`;
+  }
+  const colspan=head.split('<th').length-1;
+
+  return `<div class="card">
+    <div class="card-h"><div><h3>${CAT_LABEL[cat]}</h3>
+      <p>${c.lineCount} lines · ${inr(c.cost)}${c.hours>0?` · ${numS(c.hours)} hours`:''}${c.sharePct>0?` · ${pctS(c.sharePct)} of direct cost`:''}</p></div>
+      <span class="badge b-n">🔒 Read only in demo</span></div>
+    <div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>
+      ${[...groups.entries()].map(([g,ls])=>{
+        const gc=ls.reduce((s,l)=>s+l.cost,0);
+        return `<tr style="background:var(--sunken);font-weight:600">
+          <td colspan="${colspan-1}">${esc(g)} <span class="badge b-n">${ls.length}</span></td>
+          <td class="num">${inr(gc)}</td></tr>`+ls.map(l=>`<tr>${cells(l)}</tr>`).join('')}).join('')}
+    </tbody></table></div>
+    <div style="display:flex;justify-content:space-between;padding:12px 18px;border-top:1px solid var(--border);background:var(--sunken)">
+      <b style="font-size:12.5px;color:var(--muted)">Section total</b><b class="tab">${inr(c.cost)}</b></div>
+  </div>`;
+}
+
+/* ── Approvals ─────────────────────────────────────────────────────────────────────── */
+function viewApprovals(){
+  const e=ESTIMATES[0], r=e.result, m=mask({...r});
+  const mine=can('workflow.approval.approve');
+  return `
+  <div class="card" style="margin-bottom:15px">
+    <div class="card-h"><div><h3>Approval route</h3>
+      <p>Selected automatically by value — ${compact(r.totalCost)} clears ₹1 Cr, so the five-step high-value route applies</p></div>
+      <span class="badge b-a">High-Value Estimate Approval</span></div>
+    <div class="card-b">
+      ${APPROVAL_STEPS.map(s=>`<div style="display:flex;gap:13px;align-items:center;padding:11px 0;
+          border-bottom:1px solid var(--border)">
+        <div style="width:26px;height:26px;border-radius:99px;display:grid;place-items:center;flex:none;
+          font-size:11.5px;font-weight:700;color:#fff;background:${s.status==='APPROVED'?'var(--ok)':'var(--border-strong)'}">
+          ${s.status==='APPROVED'?'✓':s.seq}</div>
+        <div style="flex:1;min-width:0">
+          <b style="font-size:13px">${s.name}</b>
+          <div style="font-size:12px;color:var(--muted);margin-top:1px">
+            ${s.who?esc(s.who):`Claimable by anyone holding <b>${s.role}</b>`}</div></div>
+        ${s.sig?`<span class="mono" style="color:var(--subtle)" title="SHA-256 over the decision and the document hash">${s.sig}…</span>`:''}
+        <span class="badge ${tone(s.status)}">${title(s.status)}</span>
+      </div>`).join('')}
+      <div class="alert a-i" style="margin-top:14px"><span>🔏</span><span>
+        Each approval is signed <b>SHA-256 over the task, the approver, the decision, the timestamp and the
+        document hash</b>. Binding the engine's input hash makes the signature <em>scoped</em>: it proves those
+        exact figures were approved, and stops matching if any of them later change.</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><div><h3>${mine?'Your approval inbox':'Pending approvals'}</h3>
+      <p>${mine?'Tasks assigned to you or claimable by your role':'Your role cannot approve — this is a read-only view'}</p></div></div>
+    <div class="card-b">
+      <div style="display:flex;flex-wrap:wrap;gap:16px;justify-content:space-between;align-items:flex-start">
+        <div style="min-width:0">
+          <b>${esc(e.title)}</b>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">${e.code} · ${esc(e.customer)}</div>
+          <div style="display:flex;gap:26px;margin-top:12px;font-size:12.5px">
+            <div><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle);font-weight:600">Total cost</div>
+              <b class="tab">${compact(r.totalCost)}</b></div>
+            <div><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle);font-weight:600">Price</div>
+              <b class="tab">${m.sellingPrice==null?'••••':compact(m.sellingPrice)}</b></div>
+            <div><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle);font-weight:600">Margin</div>
+              <b class="tab">${m.marginPct==null?'••••':pctS(m.marginPct)}</b></div>
+          </div>
+        </div>
+        ${mine?`<div style="display:flex;gap:8px">
+          <button class="btn btn-o" onclick="alert('Rejection requires a reason and returns the estimate to draft.\\n\\nIn the full platform this is recorded in the audit trail with your identity, IP and device.')">Reject</button>
+          <button class="btn btn-p" onclick="alert('In the full platform this records a SHA-256 signature over your identity, the decision, the timestamp and the document hash — then advances the route to the next step.')">Sign and approve</button>
+        </div>`:`<span class="badge b-n">Your role cannot approve</span>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ── Machine rates ─────────────────────────────────────────────────────────────────── */
+function viewRates(){
+  const groups=new Map();
+  PROCESSES.forEach(p=>{ if(!groups.has(p.group)) groups.set(p.group,[]); groups.get(p.group).push(p) });
+  return `
+  <div class="alert a-i" style="margin-bottom:15px"><span>ℹ</span><span>
+    The rate build-up columns are the point of this screen. "Why is CNC milling ₹1,450 an hour?" is a
+    question Finance will ask, and the headline number alone cannot answer it. Rates are versioned and
+    effective-dated, so an estimate approved last year reproduces against the rates in force at the time.</span></div>
+  ${[...groups.entries()].map(([g,ps])=>`<div class="card" style="margin-bottom:15px">
+    <div class="card-h"><div><h3>${GROUP_LABEL[g]}</h3><p>${ps.length} process${ps.length===1?'':'es'}</p></div></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Process</th><th class="num">Rate/hr</th><th class="num">Depn</th><th class="num">Power</th>
+        <th class="num">Consum.</th><th class="num">Labour</th><th class="num">Overhead</th>
+        <th class="num">Setup</th><th class="num">Util.</th><th class="num">Eff.</th><th class="num">Scrap</th></tr></thead>
+      <tbody>${ps.map(p=>{
+        const lab=['MANUAL_MILLING','MANUAL_TURNING','TAPPING','THREADING','FABRICATION','TIG_WELDING','MIG_WELDING',
+          'BRAZING','DEBURRING','POLISHING','BUFFING','INSPECTION','ASSEMBLY','TESTING','PACKING','DISPATCH'].includes(p.code);
+        const dep=lab?0.05:0.38, labr=lab?0.55:0.18;
+        return `<tr><td><b>${p.name}</b>${lab?' <span class="badge b-n">Labour</span>':''}
+          <div class="mono" style="color:var(--subtle);margin-top:2px">${p.code}</div></td>
+          <td class="num"><b>${inr(p.rate)}</b></td>
+          <td class="num" style="color:var(--muted)">${inr(p.rate*dep)}</td>
+          <td class="num" style="color:var(--muted)">${inr(p.rate*.12)}</td>
+          <td class="num" style="color:var(--muted)">${inr(p.rate*.08)}</td>
+          <td class="num" style="color:var(--muted)">${inr(p.rate*labr)}</td>
+          <td class="num" style="color:var(--muted)">${inr(p.rate*(1-dep-.12-.08-labr))}</td>
+          <td class="num">${p.setup} min</td><td class="num">${p.util}%</td>
+          <td class="num">${p.eff}%</td><td class="num">${p.scrap}%</td></tr>`}).join('')}
+      </tbody></table></div></div>`).join('')}`;
+}
+
+/* ── Access model — makes the RBAC legible ─────────────────────────────────────────── */
+function viewAccess(){
+  const r=ROLES[S.user.role];
+  const est=visibleEstimates();
+  const sample=mask({...ESTIMATES[0].result});
+  const fields=Object.keys(FIELD_POLICY);
+  return `
+  <div class="grid g2" style="margin-bottom:15px">
+    <div class="card">
+      <div class="card-h"><div><h3>Your access</h3><p>Resolved with the same matcher the API guards use</p></div></div>
+      <div class="card-b">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+          ${[['Role',r.name],['Rank',r.rank],['Record scope',title(r.scope)],
+             ['Permission patterns',r.permissions.length]]
+            .map(([k,v])=>`<div><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle);font-weight:600">${k}</div>
+              <div style="font-weight:600;margin-top:3px">${v}</div></div>`).join('')}
+        </div>
+        <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle);font-weight:600;margin-bottom:7px">Granted</div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px">
+          ${r.permissions.map(p=>`<span class="badge b-a mono">${p}</span>`).join('')}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><div><h3>Field-level masking</h3><p>Applied to ${ESTIMATES[0].code}</p></div></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Field</th><th>Requires</th><th class="num">Your view</th></tr></thead>
+        <tbody>${fields.map(f=>{
+          const ok=can(FIELD_POLICY[f]);
+          const v=sample[f];
+          return `<tr><td class="mono">${f}</td>
+            <td class="mono" style="color:var(--muted);font-size:11px">${FIELD_POLICY[f]}</td>
+            <td class="num">${ok?`<b>${typeof v==='number'?(f.endsWith('Pct')?pctS(v):compact(v)):v}</b>`
+              :'<span class="locked">••••</span>'}</td></tr>`}).join('')}
+        </tbody></table></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><div><h3>Record-level scoping</h3>
+      <p>Same endpoint, different rows — decided server-side by a Prisma <span class="mono">where</span> fragment</p></div></div>
+    <div class="scroll"><table>
+      <thead><tr><th>Estimate</th><th>Business unit</th><th class="num">Visible to you</th></tr></thead>
+      <tbody>${ESTIMATES.map(e=>{const vis=est.includes(e);
+        return `<tr style="${vis?'':'opacity:.45'}"><td><b>${esc(e.title)}</b>
+          <div class="mono" style="color:var(--muted);margin-top:2px">${e.code}</div></td>
+          <td>${esc(e.buName)} <span class="badge b-n">${e.bu}</span></td>
+          <td class="num">${vis?'<span class="badge b-g">Visible</span>':'<span class="badge b-n">Filtered out</span>'}</td>
+        </tr>`}).join('')}
+      </tbody></table></div>
+    <div class="card-b" style="border-top:1px solid var(--border);color:var(--muted);font-size:12.5px">
+      Your scope is <b>${title(r.scope)}</b>${r.bu?` — ${r.bu}`:''}, so you see
+      <b>${est.length} of ${ESTIMATES.length}</b>. Switch role from the sign-out button to compare.
+    </div>
+  </div>`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════
+   6. ROUTER
+   ═══════════════════════════════════════════════════════════════════════════════════════ */
+const VIEWS={dashboard:viewDashboard,estimates:viewEstimates,estimate:viewEstimate,
+  approvals:viewApprovals,rates:viewRates,access:viewAccess};
+
+function render(){
+  const [t,s]=PAGE_META[S.page]||['TEAL DCMP',''];
+  document.getElementById('pgTitle').textContent=t;
+  document.getElementById('pgSub').textContent=s;
+  document.getElementById('view').innerHTML=(VIEWS[S.page]||viewDashboard)();
+  renderNav();
+  window.scrollTo(0,0);
+}
+function go(p){ S.page=p; render() }
+function openEstimate(id){ S.estimate=id; S.tab='summary'; S.page='estimate'; render() }
+function setTab(t){ S.tab=t; render() }
+
+function signIn(id){
+  S.user=USERS.find(u=>u.id===id);
+  S.user.permissions=ROLES[S.user.role].permissions;
+  document.getElementById('login').style.display='none';
+  document.getElementById('app').classList.add('on');
+  document.getElementById('meAv').textContent=initials(S.user.first,S.user.last);
+  document.getElementById('meName').textContent=`${S.user.first} ${S.user.last}`;
+  document.getElementById('meRole').textContent=ROLES[S.user.role].name;
+  S.page=can('dashboard.executive.view')||can('dashboard.bu.view')||can('dashboard.department.view')?'dashboard':'estimates';
+  render();
+}
+function signOut(){
+  S.user=null;
+  document.getElementById('app').classList.remove('on');
+  document.getElementById('login').style.display='grid';
+}
+function setTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  document.getElementById('thLight').classList.toggle('on',t==='light');
+  document.getElementById('thDark').classList.toggle('on',t==='dark');
+  try{ localStorage.setItem('teal.theme',t) }catch(e){}
+}
+
+/* ── Boot ──────────────────────────────────────────────────────────────────────────── */
+document.getElementById('loginLogo').innerHTML=logoFull(58,true);
+document.getElementById('sideMark').innerHTML=logoMark(29);
+document.getElementById('roleList').innerHTML=USERS.map(u=>`
+  <button class="role-btn" onclick="signIn('${u.id}')">
+    <span class="av">${initials(u.first,u.last)}</span>
+    <span style="flex:1;min-width:0"><b>${u.first} ${u.last}</b><small>${ROLES[u.role].name}</small></span>
+    <span style="font-size:10px;color:#6E93B4">${ROLES[u.role].scope==='GLOBAL'?'Global':'BU'}</span>
+  </button>`).join('');
+setTheme((()=>{ try{ return localStorage.getItem('teal.theme')||'light' }catch(e){ return 'light' } })());
+
+/* Console self-check: prove the ported engine still reproduces the server's figures. */
+(()=>{ const r=ESTIMATES[0].result;
+  const expect={directCost:8681875.338,totalCost:11279410.0967,sellingPrice:15250000,marginPct:26.04};
+  const ok=Math.abs(r.directCost-expect.directCost)<1 && Math.abs(r.totalCost-expect.totalCost)<1
+        && r.sellingPrice===expect.sellingPrice && Math.abs(r.marginPct-expect.marginPct)<0.02;
+  console.log(`%cTEAL DCMP — engine ${ENGINE_VERSION}`,'font-weight:700;color:#00A9B4');
+  console.log(`  direct cost   ${r.directCost}   (server: ${expect.directCost})`);
+  console.log(`  total cost    ${r.totalCost}   (server: ${expect.totalCost})`);
+  console.log(`  selling price ${r.sellingPrice}   (server: ${expect.sellingPrice})`);
+  console.log(`  margin        ${r.marginPct}%   (server: ${expect.marginPct}%)`);
+  console.log(ok?'%c  ✓ matches the figures the real API produced against PostgreSQL 16'
+                :'%c  ✗ DRIFT — the ported engine no longer agrees with the server',
+              `font-weight:700;color:${ok?'#0E9F6E':'#BE1818'}`);
+})();
+</script>
+</body>
+</html>
